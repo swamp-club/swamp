@@ -398,6 +398,8 @@ export interface SqliteReadModelOptions {
   /** called as the page waits for its pooled writes */
   readonly onPoolDrain?: () => void;
   readonly spellingFolding?: SpellingFolding;
+  /** false probes every path its target resolution meets; tests compare both */
+  readonly pathFacts?: boolean;
   /**
    * a partition's seqs can have holes where serve left out commits the caller
    * may not read, so any commit past the applied seq applies; off by default,
@@ -733,7 +735,7 @@ export class SqliteReadModel implements ReadModel {
   #targets: OrderedLookahead<TargetItem, ResolvedTarget> | undefined;
   /** pages the tail net plan read, applied before the store is read again */
   #readAhead: (readonly CommitChange[])[] = [];
-  readonly #paths = new PathCache();
+  readonly #paths: PathCache;
   /** set when this section reset the state, which a targeted recovery cannot build on */
   #resetInSection = false;
   /** set while a targeted recovery catches up: a compacted base sends it to full */
@@ -790,6 +792,10 @@ export class SqliteReadModel implements ReadModel {
     this.#ownWorkApplied = options.ownWorkApplied;
     this.#liveWriters = options.liveWriters;
     this.#forcedFolding = options.spellingFolding;
+    this.#paths = new PathCache(
+      (name) => this.#stats?.bump(name),
+      options.pathFacts ?? true,
+    );
     this.#targetedShare = options.targetedShare ?? MAX_TARGETED_SHARE;
     this.#targetedCommitsCeiling = options.targetedCommitsCeiling ??
       TARGETED_COMMITS_CEILING;
@@ -3321,11 +3327,17 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<void> {
     const byNamespace = new Map<string, BlobRef[]>();
     for (const { namespace, record_key } of writes) {
-      const content = this.#state.loadContent(namespace, record_key);
+      const content = this.#timeSync(
+        "base_sql",
+        () => this.#state.loadContent(namespace, record_key),
+      );
       if (content === undefined || !("blob" in content)) continue;
       if (content.blob.legacyKey !== undefined) continue;
       if (unprojectedReason(namespace, record_key, this.#checkout)) continue;
-      const owner = this.#state.loadFile(namespace, record_key);
+      const owner = this.#timeSync(
+        "base_sql",
+        () => this.#state.loadFile(namespace, record_key),
+      );
       if (
         owner !== undefined &&
         (this.#net?.skipsWrite(namespace, record_key, owner.mark) === true ||
@@ -4069,12 +4081,22 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
   ): OrderedLookahead<TargetItem, ResolvedTarget> | undefined {
     if (this.#pool === undefined) return undefined;
+    // the lookahead resolves an item right after its run-ahead check passes,
+    // and resolves anything else only when its take asks
+    let ahead = false;
     return new OrderedLookahead(entries(), {
       depth: TARGET_LOOKAHEAD,
-      resolve: (item) => this.#resolveTarget(item),
-      runsAhead: (item, pending) =>
-        !signal.aborted && item.isPut && !this.#paths.linked &&
-        !this.#meetsUnlanded(item, pending),
+      resolve: (item) => {
+        this.#stats?.bump(ahead ? "lookahead_ahead" : "lookahead_by_take");
+        ahead = false;
+        return this.#resolveTarget(item);
+      },
+      runsAhead: (item, pending) => {
+        ahead = !signal.aborted && item.isPut && !this.#paths.linked &&
+          !this.#meetsUnlanded(item, pending);
+        if (!ahead) this.#stats?.bump("lookahead_held");
+        return ahead;
+      },
       // a removal can take emptied directories with it
       schedulesAfter: (item) => item.isPut,
       // a link seen since may lead to a file still landing
@@ -4193,6 +4215,7 @@ export class SqliteReadModel implements ReadModel {
       root,
       segments,
       this.#paths,
+      this.#foldsNothing(namespace),
     );
     if (conflict?.kind === "under-file") {
       return isPut ? skip(conflict.reason) : undefined;
@@ -4658,7 +4681,10 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<void> {
     for (const { namespace, record_key } of writes) {
       signal.throwIfAborted();
-      const content = this.#state.loadContent(namespace, record_key);
+      const content = this.#timeSync(
+        "base_sql",
+        () => this.#state.loadContent(namespace, record_key),
+      );
       if (content === undefined) {
         throw new Error(
           `The compacted base shows ${record_key} present but holds no record for it`,
@@ -4669,9 +4695,13 @@ export class SqliteReadModel implements ReadModel {
           legacyBlobDetail(record_key, content.blob.legacyKey.toString()),
         );
       }
-      const target = await this.#takeTarget(
-        `${namespace}\0${record_key}`,
-        baseItem(namespace, record_key),
+      const target = await this.#time(
+        "base_target",
+        () =>
+          this.#takeTarget(
+            `${namespace}\0${record_key}`,
+            baseItem(namespace, record_key),
+          ),
       );
       if (target === undefined) {
         // A replay never records ownership of a key the guards skip; the
@@ -4680,7 +4710,10 @@ export class SqliteReadModel implements ReadModel {
         continue;
       }
       const path = target.path;
-      const owner = this.#state.loadFile(namespace, record_key);
+      const owner = this.#timeSync(
+        "base_sql",
+        () => this.#state.loadFile(namespace, record_key),
+      );
       // a later commit of the tail replaces or removes this content before
       // anything reads it: its chunks are never fetched
       if (
@@ -4880,6 +4913,8 @@ export class SqliteReadModel implements ReadModel {
     const root = this.#cacheRoot(namespace);
     const absentDirectories = this.#paths.takeAbsent(path);
     const existed = this.#paths.takeExisting(path);
+    const creates = !existed || (absentDirectories?.length ?? 0) > 0;
+    if (creates) this.#paths.noteCreating();
     const written: { info?: Deno.FileInfo } = {};
     const stats = this.#stats;
     const started = performance.now();
@@ -4905,9 +4940,13 @@ export class SqliteReadModel implements ReadModel {
       };
       if (pool !== undefined && bytes instanceof Uint8Array) {
         pruneSettled(pool);
-        while (pool.length >= this.#pooledWrites) {
-          await Promise.race(pool.map((write) => write.done));
-          pruneSettled(pool);
+        if (pool.length >= this.#pooledWrites) {
+          await this.#time("pool_wait", async () => {
+            while (pool.length >= this.#pooledWrites) {
+              await Promise.race(pool.map((write) => write.done));
+              pruneSettled(pool);
+            }
+          });
         }
         if (this.#poolFailure !== undefined) throw this.#poolFailure.error;
         this.#stats?.bump("writes_pooled");
@@ -4935,7 +4974,10 @@ export class SqliteReadModel implements ReadModel {
           landed?.();
         }).catch((error: unknown) => {
           this.#poolFailure ??= { error };
+          // the facts noted when it was queued may never have come true
+          this.#paths.clear();
         }).finally(() => {
+          if (creates) this.#paths.noteCreating();
           entry.settled = true;
         });
       } else {
@@ -4985,6 +5027,7 @@ export class SqliteReadModel implements ReadModel {
       }
       throw error;
     } finally {
+      if (creates) this.#paths.noteCreating();
       if (stats !== undefined) stats.contentMs += performance.now() - started;
     }
     stats?.noteWritten(namespace, key, intended?.size ?? 0);
@@ -5003,6 +5046,7 @@ export class SqliteReadModel implements ReadModel {
     for (const dir of [...absentDirectories ?? []].reverse()) {
       this.#paths.markCreated(dir);
     }
+    this.#paths.noteWritten(path, existed);
     // A new name in some directory, under whichever spelling it was listed.
     if (!existed || (absentDirectories?.length ?? 0) > 0) {
       this.#paths.forgetListings();
@@ -6018,35 +6062,50 @@ async function pathConflict(
   root: string,
   segments: readonly string[],
   paths: PathCache,
+  exactSpelling: boolean,
 ): Promise<{ conflict?: PathConflict; missingFrom?: number }> {
   for (let i = 1; i <= segments.length; i++) {
     const prefix = join(root, ...segments.slice(0, i));
     if (i < segments.length && paths.isDirectory(prefix)) continue;
-    let info: Deno.FileInfo;
-    let linked = false;
     const at = segments.slice(0, i).join("/");
-    try {
-      info = await Deno.lstat(prefix);
-      if (info.isSymlink) {
-        linked = true;
-        paths.noteLink();
-        info = await Deno.stat(prefix);
+    let kind = paths.facts(prefix, exactSpelling);
+    if (kind === "absent") return { missingFrom: i };
+    if (kind === undefined) {
+      const creations = paths.creations;
+      paths.count("path_lstats");
+      let info: Deno.FileInfo;
+      let linked = false;
+      try {
+        info = await Deno.lstat(prefix);
+        if (info.isSymlink) {
+          linked = true;
+          paths.noteLink();
+          paths.count("path_stats");
+          info = await Deno.stat(prefix);
+        }
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+        paths.count("path_notfound");
+        // mkdir cannot replace a link to nothing, so every retry would fail
+        if (linked && i < segments.length) {
+          return {
+            conflict: {
+              kind: "under-file",
+              reason: `${at} is a link to nothing, so it cannot hold a record`,
+            },
+          };
+        }
+        // only an lstat that found no entry at all, so no link, says absent
+        if (!linked && i < segments.length) {
+          paths.noteMissing(prefix, creations);
+        }
+        return { missingFrom: i };
       }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-      // mkdir cannot replace a link to nothing, so every retry would fail
-      if (linked && i < segments.length) {
-        return {
-          conflict: {
-            kind: "under-file",
-            reason: `${at} is a link to nothing, so it cannot hold a record`,
-          },
-        };
-      }
-      return { missingFrom: i };
+      // the lstat above has noted any link this kind came through
+      kind = info.isDirectory ? "directory" : "file";
+      paths.noteKind(prefix, kind);
     }
-    if (info.isDirectory) paths.markDirectory(prefix);
-    if (i < segments.length && !info.isDirectory) {
+    if (i < segments.length && kind !== "directory") {
       return {
         conflict: {
           kind: "under-file",
@@ -6054,7 +6113,7 @@ async function pathConflict(
         },
       };
     }
-    if (i === segments.length && info.isDirectory) {
+    if (i === segments.length && kind === "directory") {
       return {
         conflict: { kind: "directory", reason: `${at} is a directory` },
       };
@@ -6165,6 +6224,32 @@ interface ListedNames {
   readonly folded: ReadonlyMap<string, string>;
 }
 
+type PathKind = "file" | "directory";
+type PathFact = "absent" | PathKind;
+
+// Two such names reach one file only by ASCII case, on any filesystem: no
+// trailing dot or space, short-name tilde, stream colon or device name.
+const PLAIN_NAME =
+  /^(?!(?:con|prn|aux|nul|com\d|lpt\d)(?:\.|$))[a-z0-9_\-+@=,.]*[a-z0-9_\-+@=,]$/i;
+
+class CreatedNames {
+  readonly #exact = new Set<string>();
+  readonly #lower = new Set<string>();
+  #unplain = false;
+
+  add(name: string): void {
+    this.#exact.add(name);
+    if (PLAIN_NAME.test(name)) this.#lower.add(name.toLowerCase());
+    else this.#unplain = true;
+  }
+
+  mayHold(name: string, exactSpelling: boolean): boolean {
+    if (exactSpelling) return this.#exact.has(name);
+    if (this.#unplain || !PLAIN_NAME.test(name)) return true;
+    return this.#lower.has(name.toLowerCase());
+  }
+}
+
 class FoldedKeys {
   readonly #keys = new Map<string, Set<string>>();
 
@@ -6185,12 +6270,18 @@ class FoldedKeys {
 }
 
 /**
- * directories are remembered so a page of many files under one resolves and
- * stats it once; cleared on any removal and at the start of every section, as
- * another process may change the tree
+ * cleared on any removal, moveAside, failed pooled write and section start; a
+ * missing-directory fact is also dropped when the section creates anything;
+ * no other process writes into the tree within one section
  */
 class PathCache {
-  readonly #directories = new Set<string>();
+  readonly #kinds = new Map<string, PathKind>();
+  readonly #missing = new Set<string>();
+  /** by real path, so a symlinked spelling of the directory finds it */
+  readonly #created = new Map<string, CreatedNames>();
+  #creations = 0;
+  readonly #count: (name: string) => void;
+  readonly #factsOn: boolean;
   readonly #resolved = new Map<string, string>();
   readonly #absent = new Map<string, readonly string[]>();
   readonly #existing = new Set<string>();
@@ -6210,20 +6301,85 @@ class PathCache {
     this.#linked = true;
   }
 
+  constructor(count: (name: string) => void, factsOn: boolean) {
+    this.#count = count;
+    this.#factsOn = factsOn;
+  }
+
+  count(name: string): void {
+    this.#count(name);
+  }
+
   isDirectory(path: string): boolean {
-    return this.#directories.has(path);
+    return this.#kinds.get(path) === "directory";
   }
 
   markDirectory(path: string): void {
-    this.#directories.add(path);
+    this.#kinds.set(path, "directory");
+  }
+
+  noteKind(path: string, kind: PathKind): void {
+    this.#kinds.set(path, kind);
+  }
+
+  /** exactSpelling only where the root folds no spelling; elsewhere names compare as a folding filesystem might join them */
+  facts(path: string, exactSpelling: boolean): PathFact | undefined {
+    if (!this.#factsOn) return undefined;
+    const kind = this.#kinds.get(path);
+    if (kind !== undefined) return kind;
+    if (this.#missing.size > 0) {
+      for (let at = path;; at = dirname(at)) {
+        if (this.#missing.has(at)) return "absent";
+        if (dirname(at) === at) break;
+      }
+    }
+    const parent = this.#resolved.get(dirname(path));
+    const names = parent === undefined ? undefined : this.#created.get(parent);
+    if (names !== undefined && !names.mayHold(basename(path), exactSpelling)) {
+      return "absent";
+    }
+    return undefined;
+  }
+
+  /** changes whenever this section may create a file or directory */
+  get creations(): number {
+    return this.#creations;
+  }
+
+  /** dropped when something was created since the probe began */
+  noteMissing(dir: string, creations: number): void {
+    if (this.#factsOn && creations === this.#creations) this.#missing.add(dir);
+  }
+
+  /**
+   * called as a write that may create a name starts and as it ends: what it
+   * creates can be any missing path's alias, through a symlink or a spelling
+   */
+  noteCreating(): void {
+    this.#creations++;
+    this.#missing.clear();
   }
 
   markCreated(dir: string): void {
-    this.#directories.add(dir);
+    this.#kinds.set(dir, "directory");
     const parent = this.#resolved.get(dirname(dir));
-    if (parent !== undefined) {
-      this.#resolved.set(dir, join(parent, basename(dir)));
+    // a new name in a directory of unknown real path could be in any of them
+    if (parent === undefined) {
+      this.#created.clear();
+      return;
     }
+    const real = join(parent, basename(dir));
+    this.#resolved.set(dir, real);
+    this.#created.get(parent)?.add(basename(dir));
+    if (!this.#created.has(real)) this.#created.set(real, new CreatedNames());
+  }
+
+  /** a file this section wrote or queued; a meeting probe waits for it to land */
+  noteWritten(path: string, existed: boolean): void {
+    this.#kinds.set(path, "file");
+    const parent = this.#resolved.get(dirname(path));
+    if (parent !== undefined) this.#created.get(parent)?.add(basename(path));
+    else if (!existed) this.#created.clear();
   }
 
   noteAbsent(path: string, dirs: readonly string[]): void {
@@ -6262,7 +6418,7 @@ class PathCache {
    */
   async resolve(path: string): Promise<string> {
     try {
-      if ((await Deno.lstat(path)).isSymlink) this.#linked = true;
+      if ((await this.#lstat(path)).isSymlink) this.#linked = true;
       return await resolveRealPath(path);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
@@ -6286,13 +6442,37 @@ class PathCache {
   async #resolveUncached(dir: string): Promise<string> {
     const parent = dirname(dir);
     if (parent === dir) return await resolveRealPath(dir);
+    // nothing is under a missing directory, so no lstat there can find a link
+    if (this.#withinMissing(parent)) {
+      return join(await this.resolveDirectory(parent), basename(dir));
+    }
+    const creations = this.#creations;
     try {
-      if ((await Deno.lstat(dir)).isSymlink) this.#linked = true;
+      if ((await this.#lstat(dir)).isSymlink) this.#linked = true;
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
+      this.noteMissing(dir, creations);
       return join(await this.resolveDirectory(parent), basename(dir));
     }
     return await resolveRealPath(dir);
+  }
+
+  async #lstat(path: string): Promise<Deno.FileInfo> {
+    this.#count("path_lstats");
+    try {
+      return await Deno.lstat(path);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) this.#count("path_notfound");
+      throw error;
+    }
+  }
+
+  #withinMissing(path: string): boolean {
+    if (!this.#factsOn || this.#missing.size === 0) return false;
+    for (let at = path;; at = dirname(at)) {
+      if (this.#missing.has(at)) return true;
+      if (dirname(at) === at) return false;
+    }
   }
 
   noteExisting(path: string): void {
@@ -6347,7 +6527,10 @@ class PathCache {
   }
 
   clear(): void {
-    this.#directories.clear();
+    this.#kinds.clear();
+    this.#missing.clear();
+    this.#created.clear();
+    this.#creations++;
     this.#resolved.clear();
     this.#absent.clear();
     this.#existing.clear();

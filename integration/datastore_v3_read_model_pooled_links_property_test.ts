@@ -32,7 +32,10 @@ import {
   READ_MODEL_STATE_FILE,
   type SqliteReadModel,
 } from "../src/infrastructure/datastore_v3/sqlite_read_model.ts";
-import type { SpellingFolding } from "../src/infrastructure/datastore_v3/spelling_folding.ts";
+import {
+  probeSpellingFolding,
+  type SpellingFolding,
+} from "../src/infrastructure/datastore_v3/spelling_folding.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { withCapturedSpans } from "../src/infrastructure/tracing/span_test_helpers.ts";
 import {
@@ -45,6 +48,18 @@ import {
 
 const PARTITION = modelPartition();
 const ATTR = "swamp.datastore.v3.";
+
+async function tempFolding(): Promise<SpellingFolding> {
+  const dir = await Deno.makeTempDir();
+  try {
+    return await probeSpellingFolding(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+// forcing off where the filesystem folds would lie to the read model
+const TEMP_FOLDS = await tempFolding() !== "off";
 
 // Mostly two names, so keys meet each other and the links between them; the
 // rest differ from a written name by case or Unicode normalisation, or are
@@ -185,8 +200,8 @@ async function snapshot(env: V3Env): Promise<Record<string, string>> {
   return seen;
 }
 
-// Measured, or about the pool itself, so it differs by design.
-const UNCOMPARED = /(_ms$)|pool/;
+// Measured, about the pool itself, or probe counts, so it differs by design.
+const UNCOMPARED = /(_ms$)|pool|(\.path_)|(\.lookahead_)/;
 
 function verdictAttributes(
   spans: readonly { name: string; attributes: Record<string, unknown> }[],
@@ -336,7 +351,7 @@ for (const folding of ["off", "canonical", "list"] as const) {
     name:
       `read model pooled writes: with ${folding} folding and links inside the root, pooled writes agree with writes one at a time on every verdict, the tree and the state`,
     // symlinks need a privilege on Windows
-    ignore: Deno.build.os === "windows",
+    ignore: Deno.build.os === "windows" || (folding === "off" && TEMP_FOLDS),
     fn: async () => {
       const coverage = { linked: 0, aliased: 0, failed: 0 };
       await fc.assert(
