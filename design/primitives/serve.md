@@ -2320,9 +2320,10 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   pins it; a setting only partly applied is listed under both. A reload
   compares the file against the configuration the process is running, not
   the file the last reload read: only what commit applied takes the file's
-  value, so a setting that needs a restart, is overridden, or whose follow-up
-  did not fully land is reported on every reload until serve restarts or the
-  file changes back. The audit block keeps its own running copy the same way
+  value, so a setting that needs a restart or is overridden is reported on
+  every reload until serve restarts or the file changes back. A follow-up that
+  fails puts its settings back and the next reload retries them; one that
+  lands partly leaves its value in force, so it is reported once. The audit block keeps its own running copy the same way
   (`runningAuditConfig`). The class of
   every setting is in `SETTING_CATALOGUE`. Applied: the dashboard and internal
   API, run, webhook-run and signal-wait limits, queue, idle, drain and

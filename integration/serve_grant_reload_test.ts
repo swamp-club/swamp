@@ -624,6 +624,29 @@ Deno.test("serve grant reload: a node that does not lead grant writes reports th
   });
 });
 
+Deno.test("serve grant reload: a follower that reverts an admin removal it could not finish reports the revert, never ignores it", async () => {
+  await withRepo(async (repoDir, repo) => {
+    const follower = await startInstance(
+      repoDir,
+      repo,
+      config({ admins: ["user:alice", "user:bob"] }),
+      { leads: () => false },
+    );
+    try {
+      await follower.reload(config({ admins: ["user:alice"] }));
+      const reverted = await follower.reload(
+        config({ admins: ["user:alice", "user:bob"] }),
+      );
+      assertEquals(reverted.report.needsRestart, [{
+        setting: "auth.admins",
+        reason: ADMIN_ADDITION_NEEDS_RESTART,
+      }]);
+    } finally {
+      await follower.close();
+    }
+  });
+});
+
 Deno.test("serve grant reload: a switch to auto after shutdown closed the poller leaves no poller running", async () => {
   await withRepo(async (repoDir, repo) => {
     const grantsFile = join(repoDir, "grants.yaml");

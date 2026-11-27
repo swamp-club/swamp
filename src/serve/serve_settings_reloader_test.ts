@@ -401,7 +401,7 @@ Deno.test("createServeSettingsReloader: a setting pinned by a startup flag is re
   assertEquals(h.calls.includes("apply:maxConcurrentRuns"), false);
 });
 
-Deno.test("createServeSettingsReloader: a follow-up setting that landed partly is reported again on the next reload", async () => {
+Deno.test("createServeSettingsReloader: a follow-up setting that landed partly is in force, so the next reload leaves it and a revert applies it", async () => {
   const h = harness(null, {
     followUps: (_candidate, _prepared, applied) =>
       applied.includes("dashboard")
@@ -414,11 +414,49 @@ Deno.test("createServeSettingsReloader: a follow-up setting that landed partly i
   });
   const reloader = createServeSettingsReloader(h.deps);
   h.file = { dashboard: true };
-  await (await reloader(reload)).followUp();
-  const again = await reloader(reload);
-  await again.followUp();
-  assertEquals(again.report.applied, ["dashboard"]);
-  assertEquals(again.report.needsRestart, [
+  const first = await reloader(reload);
+  await first.followUp();
+  assertEquals(first.report.needsRestart, [
     { setting: "dashboard", reason: "this node does not lead" },
   ]);
+  h.calls.length = 0;
+  const again = await reloader(reload);
+  await again.followUp();
+  assertEquals(again.report.applied, []);
+  assertEquals(h.calls.includes("apply:dashboard"), false);
+  h.file = null;
+  h.calls.length = 0;
+  const reverted = await reloader(reload);
+  await reverted.followUp();
+  assertEquals(reverted.report.applied, ["dashboard"]);
+  assertEquals(h.calls.includes("apply:dashboard"), true);
+});
+
+Deno.test("createServeSettingsReloader: a follow-up setting that failed is retried, and a revert still applies the file's value", async () => {
+  let fail = true;
+  const h = harness(null, {
+    followUps: (_candidate, _prepared, applied) =>
+      applied.includes("dashboard")
+        ? [{
+          name: "Revoking admin grants",
+          settings: ["dashboard"],
+          run: () =>
+            fail
+              ? Promise.reject(new Error("datastore unreachable"))
+              : Promise.resolve(),
+        }]
+        : [],
+  });
+  const reloader = createServeSettingsReloader(h.deps);
+  h.file = { dashboard: true };
+  await (await reloader(reload)).followUp();
+  fail = false;
+  h.file = null;
+  h.calls.length = 0;
+  const reverted = await reloader(reload);
+  await reverted.followUp();
+  assertEquals(h.calls.includes("apply:dashboard"), true);
+  h.calls.length = 0;
+  await (await reloader(reload)).followUp();
+  assertEquals(h.calls.includes("apply:dashboard"), false);
 });

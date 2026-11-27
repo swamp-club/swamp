@@ -208,7 +208,6 @@ export function createServeSettingsReloader<S, P>(
           try {
             const result = await followUp.run();
             if (result) {
-              running = overlayAppliedSettings(running, previous, carried);
               for (const key of carried) {
                 needsRestart.push({
                   setting: settingName(key),
@@ -224,6 +223,7 @@ export function createServeSettingsReloader<S, P>(
               );
               continue;
             }
+            // a partial result is in force and stays in running; a failed one is not
             running = overlayAppliedSettings(running, previous, carried);
             for (const key of carried) {
               notLanded.push(key);
