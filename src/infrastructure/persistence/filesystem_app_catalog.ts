@@ -221,8 +221,8 @@ async function descriptorsIn(
   return paths.sort();
 }
 
-// walks as @std/fs walk did (links matched, never entered), but an unreadable
-// folder is a problem rather than the end of the walk
+// a link is matched but never entered; an unreadable folder is a problem, not
+// the end of the walk
 async function* pulledDescriptors(
   dir: string,
   problems: AppCatalogProblem[],
