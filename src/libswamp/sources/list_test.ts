@@ -123,6 +123,31 @@ Deno.test("sourceList: a source with kinds and apps reports both", async () => {
   });
 });
 
+Deno.test({
+  name:
+    "sourceList: an unreadable apps folder leaves a source with kinds valid",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withRepo(async (repo) => {
+      const src = join(repo, "models-unreadable-apps");
+      await Deno.mkdir(join(src, "extensions", "models"), { recursive: true });
+      await writeApp(src);
+      const appsDir = join(src, "extensions", "apps");
+      await Deno.chmod(appsDir, 0o000);
+      try {
+        await writeSourcesYaml(repo, `sources:\n  - path: ${src}\n`);
+        const deps = await createSourceListDeps(repo);
+        const data = completedData(await collect(sourceList(ctx, deps)));
+        assertEquals(data.sources[0].status, "valid");
+        assertEquals(data.sources[0].resolvedKinds, ["models"]);
+        assertEquals(data.sources[0].hasApps, undefined);
+      } finally {
+        await Deno.chmod(appsDir, 0o755);
+      }
+    });
+  },
+});
+
 Deno.test("sourceList: a glob whose only contribution is an app is valid", async () => {
   await withRepo(async (repo) => {
     const parent = join(repo, "parent");

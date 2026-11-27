@@ -498,6 +498,34 @@ Deno.test("sourceAdd e2e: an apps folder without an app.yaml is still rejected",
   });
 });
 
+Deno.test({
+  name:
+    "sourceAdd e2e: an unreadable apps folder with no kinds is refused, not thrown",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withTempRepo(async (repo) => {
+      const src = join(repo, "unreadable-apps");
+      await writeApp(src);
+      const appsDir = join(src, "extensions", "apps");
+      await Deno.chmod(appsDir, 0o000);
+      try {
+        const deps = await createSourceAddDeps(repo);
+        const events = await collectEvents(sourceAdd(ctx, deps, src));
+        const error = findError(events);
+        assertEquals(error?.kind, "error");
+        if (error?.kind === "error") {
+          assertStringIncludes(
+            error.error.message,
+            "No extensions or apps found",
+          );
+        }
+      } finally {
+        await Deno.chmod(appsDir, 0o755);
+      }
+    });
+  },
+});
+
 Deno.test("sourceAdd e2e: a source with models and apps is added as before", async () => {
   await withTempRepo(async (repo) => {
     const src = join(repo, "models-and-apps");

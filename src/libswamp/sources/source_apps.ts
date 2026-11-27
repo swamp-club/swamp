@@ -34,7 +34,12 @@ export async function resolveSourceHasApps(
     legacyBaseDir,
   );
   for (const entry of expanded) {
-    if (await hasAppDescriptors(entry.path)) return true;
+    try {
+      if (await hasAppDescriptors(entry.path)) return true;
+    } catch (error) {
+      // an unreadable apps folder must not hide the kinds a source does load
+      if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+    }
   }
   return false;
 }
