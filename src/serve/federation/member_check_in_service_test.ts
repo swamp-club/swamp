@@ -22,7 +22,7 @@ import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { MemberCredential } from "../../domain/serve/member_credential.ts";
-import { HUB_LINK_KEY } from "./hub_link_store.ts";
+import { HUB_LINK_KEY, JOIN_CLAIM_KEY } from "./hub_link_store.ts";
 import {
   MAX_JOIN_TOKEN_BYTES,
   readJoinTokenFile,
@@ -503,9 +503,11 @@ Deno.test("MemberCheckInService: the joinId is stored before the join request le
   };
   node.service.start();
   try {
-    await waitFor(() => hub.checkIns.length >= 1, "a check-in");
+    await waitFor(
+      async () => (await node.links.readLink()).joinId === null,
+      "the first check-in confirms the join",
+    );
     assertEquals(storedAtRequest, hub.joinIds[0]);
-    assertEquals((await node.links.readLink()).joinId, null);
   } finally {
     await node.service.stop();
   }
@@ -661,5 +663,169 @@ Deno.test("MemberCheckInService: neither the token nor the joinId reaches a log 
     assert(!text.includes(token));
   } finally {
     await reset();
+  }
+});
+
+function staleClaim(store: AtomicMemoryStore): void {
+  store.entries.set(
+    JOIN_CLAIM_KEY,
+    new TextEncoder().encode(JSON.stringify({
+      instanceId: crypto.randomUUID(),
+      claimedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+    })),
+  );
+}
+
+Deno.test("MemberCheckInService: a node that stalls and stores a credential the hub replaced heals with one replay, and both nodes keep checking in", async () => {
+  const store = new AtomicMemoryStore();
+  const hub = fastHub();
+  hub.rotateCredentials = true;
+  const token = hub.mintToken();
+  const a = await memberNode(store, hub, { token });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => release = resolve);
+  let stalled = false;
+  const store_ = a.credentials.store.bind(a.credentials);
+  a.credentials.store = async (credential) => {
+    if (!stalled) {
+      stalled = true;
+      await gate;
+    }
+    await store_(credential);
+  };
+  a.service.start();
+  const b = await memberNode(store, hub, { token });
+  try {
+    await waitFor(() => stalled, "node A stalls before storing its credential");
+    // node A held the claim past its timeout
+    staleClaim(store);
+    b.service.start();
+    await waitFor(
+      async () => (await b.links.readLink()).joinId === null,
+      "node B replays the join and confirms it",
+    );
+    assertEquals(hub.joins.length, 2);
+    release();
+    const checkInsOf = (node: MemberNode) =>
+      hub.checkIns.filter((c) => c.instanceId === node.instanceId).length;
+    const before = { a: checkInsOf(a), b: checkInsOf(b) };
+    await waitFor(
+      () => checkInsOf(a) > before.a + 2 && checkInsOf(b) > before.b + 2,
+      "both nodes check in again",
+    );
+    assertEquals(hub.joins.length, 3);
+    const link = await a.links.readLink();
+    assertEquals(link.state, "joined");
+    await waitFor(
+      async () => (await a.links.readLink()).joinId === null,
+      "the healed join is confirmed",
+    );
+    assert((await instanceOf(a))?.result !== "refused");
+    assert((await instanceOf(b))?.result !== "refused");
+  } finally {
+    release();
+    await a.service.stop();
+    await b.service.stop();
+  }
+});
+
+Deno.test("MemberCheckInService: two nodes taking over one stale claim leave one joiner and no refusal", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [{
+      category: ["serve"],
+      lowestLevel: "debug",
+      sinks: ["capture"],
+    }],
+    reset: true,
+  });
+  try {
+    const store = new AtomicMemoryStore();
+    staleClaim(store);
+    // both nodes judge the claim stale; the second goes on only once the first
+    // has replaced it, as a node that stalled between its steps would
+    let reads = 0;
+    let bothRead!: () => void;
+    const bothHaveRead = new Promise<void>((resolve) => bothRead = resolve);
+    let replaced!: () => void;
+    const firstReplaced = new Promise<void>((resolve) => replaced = resolve);
+    const get = store.get.bind(store);
+    store.get = async (key: string) => {
+      const value = await get(key);
+      if (key !== JOIN_CLAIM_KEY || reads >= 2) return value;
+      reads++;
+      if (reads === 1) {
+        await bothHaveRead;
+      } else {
+        bothRead();
+        await firstReplaced;
+      }
+      return value;
+    };
+    const putIfAbsent = store.putIfAbsent.bind(store);
+    store.putIfAbsent = async (key: string, data: Uint8Array) => {
+      const created = await putIfAbsent(key, data);
+      if (key === JOIN_CLAIM_KEY && created && reads === 2) replaced();
+      return created;
+    };
+    const hub = fastHub();
+    const token = hub.mintToken();
+    const a = await memberNode(store, hub, { token });
+    const b = await memberNode(store, hub, { token });
+    a.service.start();
+    b.service.start();
+    try {
+      await waitFor(
+        () => new Set(hub.checkIns.map((c) => c.instanceId)).size === 2,
+        "both nodes check in",
+      );
+      assertEquals(hub.joins.length, 1);
+      assertEquals(
+        records.filter((r) => r.level === "error").length,
+        0,
+        records.map((r) => r.message.join("")).join("\n"),
+      );
+    } finally {
+      await a.service.stop();
+      await b.service.stop();
+    }
+  } finally {
+    await reset();
+  }
+});
+
+Deno.test("MemberCheckInService: a refusal waits for the join claim before deleting anything", async () => {
+  const store = new AtomicMemoryStore();
+  const hub = fastHub();
+  const node = await memberNode(store, hub, { token: hub.mintToken() });
+  node.service.start();
+  try {
+    await waitFor(() => hub.checkIns.length >= 1, "a check-in");
+    // another node is joining: it holds a fresh claim
+    store.entries.set(
+      JOIN_CLAIM_KEY,
+      new TextEncoder().encode(JSON.stringify({
+        instanceId: crypto.randomUUID(),
+        claimedAt: new Date().toISOString(),
+      })),
+    );
+    const memberId = (await node.links.readLink()).memberId!;
+    hub.removed.add(memberId);
+    await waitFor(
+      async () => (await instanceOf(node))?.result === "waiting",
+      "the refusal waits for the claim",
+    );
+    assertEquals((await node.links.readLink()).state, "joined");
+    assert(await node.credentials.read() !== undefined);
+    store.entries.delete(JOIN_CLAIM_KEY);
+    await waitFor(
+      async () => (await instanceOf(node))?.result === "refused",
+      "the refusal lands once the claim is free",
+    );
+    assertEquals((await node.links.readLink()).state, "refused");
+    assertEquals(await node.credentials.read(), undefined);
+  } finally {
+    await node.service.stop();
   }
 });

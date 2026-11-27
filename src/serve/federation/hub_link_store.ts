@@ -136,15 +136,26 @@ export class HubLinkStore {
       claimedAt: new Date(this.#now()).toISOString(),
     });
     if (await this.#createIfAbsent(claim, id)) return true;
-    const current = await this.#readClaim();
+    const seen = await this.#store.get(JOIN_CLAIM_KEY);
+    if (seen === null) return false;
+    const current = parseClaim(seen);
     if (current?.instanceId === id) return true;
     const stale = current === undefined ||
       this.#now() - Date.parse(current.claimedAt) > JOIN_CLAIM_STALE_MS;
     if (!stale) return false;
+    // delete only the claim judged stale: one another node took over meanwhile stays
+    const again = await this.#store.get(JOIN_CLAIM_KEY);
+    if (again === null || !sameBytes(again, seen)) return false;
     await this.#store.delete(JOIN_CLAIM_KEY);
     if (!await this.#createIfAbsent(claim, id)) return false;
     // another node may have deleted and taken the claim between our steps
     return (await this.#readClaim())?.instanceId === id;
+  }
+
+  /** whether this instance still holds the join claim, checked before the hub is called */
+  async holdsJoin(instanceId: string): Promise<boolean> {
+    return (await this.#readClaim())?.instanceId ===
+      InstanceId.create(instanceId).value;
   }
 
   async releaseJoin(instanceId: string): Promise<void> {
@@ -174,12 +185,7 @@ export class HubLinkStore {
 
   async #readClaim(): Promise<z.infer<typeof JoinClaimSchema> | undefined> {
     const bytes = await this.#store.get(JOIN_CLAIM_KEY);
-    if (bytes === null) return undefined;
-    try {
-      return JoinClaimSchema.parse(decode(bytes));
-    } catch {
-      return undefined;
-    }
+    return bytes === null ? undefined : parseClaim(bytes);
   }
 }
 
@@ -187,6 +193,20 @@ export class HubLinkStore {
 export interface FederationMemberLink {
   readonly links: HubLinkStore;
   readonly configuredHubUrl: string;
+}
+
+function parseClaim(
+  bytes: Uint8Array,
+): z.infer<typeof JoinClaimSchema> | undefined {
+  try {
+    return JoinClaimSchema.parse(decode(bytes));
+  } catch {
+    return undefined;
+  }
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
 function parseInstance(bytes: Uint8Array): HubLinkInstance | undefined {

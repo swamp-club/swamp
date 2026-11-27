@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   decideStart,
   HubLink,
@@ -190,28 +190,37 @@ Deno.test("HubLink.beginJoin: a joining link keeps its joinId and takes the new 
   );
 });
 
-Deno.test("HubLink: a settled link holds no joinId; abandonJoin starts afresh", () => {
-  assertEquals(joinedLink().joinId, null);
-  assertEquals(joinedLink().refuse().joinId, null);
+Deno.test("HubLink: a joined link keeps its joinId until confirmed; refused and mismatched hold none; abandonJoin starts afresh", () => {
+  const joined = HubLink.unjoined().beginJoin(HUB, crypto.randomUUID())
+    .received(MEMBER).joined();
+  assert(joined.joinId !== null);
+  assertEquals(joined.replayable, true);
+  assertEquals(joined.confirmed().joinId, null);
+  assertEquals(joined.confirmed().replayable, false);
+  assertEquals(joined.confirmed().confirmed(), joined.confirmed());
+  assertEquals(joined.refuse().joinId, null);
+  assertEquals(joined.mismatch().joinId, null);
+  assertThrows(() => joined.refuse().confirmed(), HubLinkError);
   const joining = HubLink.unjoined().beginJoin(HUB, crypto.randomUUID());
   assertEquals(joining.abandonJoin().toJSON(), HubLink.unjoined().toJSON());
   assertEquals(joining.received(MEMBER).abandonJoin().state, "unjoined");
   assertThrows(() => joinedLink().abandonJoin(), HubLinkError);
 });
 
-Deno.test("HubLink.fromJSON: a joinId must be a lower-case UUID, a settled link holds none, and an older record reads without one", () => {
+Deno.test("HubLink.fromJSON: a joinId must be a lower-case UUID, only a joining or joined link holds one, and an older record reads without one", () => {
   const joining = HubLink.unjoined().beginJoin(HUB, crypto.randomUUID());
   assertEquals(HubLink.fromJSON(joining.toJSON()).toJSON(), joining.toJSON());
   assertThrows(
     () => HubLink.fromJSON({ ...joining.toJSON(), joinId: "NOT-A-UUID" }),
     HubLinkError,
   );
+  const joinId = crypto.randomUUID();
+  assertEquals(
+    HubLink.fromJSON({ ...joinedLink().toJSON(), joinId }).joinId,
+    joinId,
+  );
   assertThrows(
-    () =>
-      HubLink.fromJSON({
-        ...joinedLink().toJSON(),
-        joinId: crypto.randomUUID(),
-      }),
+    () => HubLink.fromJSON({ ...joinedLink().refuse().toJSON(), joinId }),
     HubLinkError,
   );
   const { joinId: _id, ...older } = joinedLink().toJSON();

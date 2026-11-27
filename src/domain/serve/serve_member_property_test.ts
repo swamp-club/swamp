@@ -253,7 +253,7 @@ Deno.test("ServeMember.fromJSON: any extra keys round-trip through read and writ
     fc.property(
       fc.dictionary(
         fc.string({ minLength: 1, maxLength: 12 }).filter((key) =>
-          !KNOWN_KEYS.has(key)
+          !KNOWN_KEYS.has(key) && key !== "__proto__"
         ),
         fc.jsonValue(),
         { maxKeys: 5 },
@@ -276,4 +276,26 @@ Deno.test("ServeMember.fromJSON: any extra keys round-trip through read and writ
       },
     ),
   );
+});
+
+Deno.test("ServeMember.fromJSON: an own __proto__ key in a stored record is dropped and reaches no prototype", () => {
+  const member = ServeMember.join({
+    memberId: crypto.randomUUID(),
+    name: MemberName.create("edge-1"),
+    role: "member",
+    fingerprint: sampleFingerprint(),
+    now: NOW,
+  });
+  const input = JSON.parse(
+    `{"__proto__":{"polluted":true},${
+      JSON.stringify(member.toJSON()).slice(1)
+    }`,
+  );
+  const json = ServeMember.fromJSON(input).toJSON() as unknown as Record<
+    string,
+    unknown
+  >;
+  assertEquals(Object.hasOwn(json, "__proto__"), false);
+  assertEquals(Object.getPrototypeOf(json), Object.prototype);
+  assertEquals((json as { polluted?: boolean }).polluted, undefined);
 });

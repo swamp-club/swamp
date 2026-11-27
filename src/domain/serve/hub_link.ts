@@ -72,8 +72,10 @@ const UNJOINED: HubLinkProps = {
 };
 
 /**
- * a member's link to its one hub; only a joining link holds its joinId, and
- * once settled, only a joined or mismatched link holds a credential
+ * a member's link to its one hub; a joining link holds its joinId, and a joined
+ * one keeps it until a check-in confirms the stored credential, so a node whose
+ * credential a stalled node overwrote can replay the join once. Once settled,
+ * only a joined or mismatched link holds a credential
  */
 export class HubLink {
   private constructor(private readonly props: HubLinkProps) {}
@@ -108,7 +110,10 @@ export class HubLink {
     if (props.joinId !== null && joinIdOf(props.joinId) === undefined) {
       throw new HubLinkError("A hub link's joinId must be a lower-case UUID");
     }
-    if (props.state !== "joining" && props.joinId !== null) {
+    if (
+      props.state !== "joining" && props.state !== "joined" &&
+      props.joinId !== null
+    ) {
       throw new HubLinkError(`A ${props.state} hub link holds no joinId`);
     }
     return new HubLink({ ...props, memberId });
@@ -194,13 +199,25 @@ export class HubLink {
     });
   }
 
-  /** once the credential is stored */
+  /** once the credential is stored; the joinId stays until confirmed() */
   joined(): HubLink {
     this.#expect(["joining", "mismatched"], "mark joined");
     if (this.props.memberId === null) {
       throw new HubLinkError("A hub link cannot be joined before a join reply");
     }
-    return new HubLink({ ...this.props, state: "joined", joinId: null });
+    return new HubLink({ ...this.props, state: "joined" });
+  }
+
+  /** a check-in succeeded with the stored credential: the join can no longer be replayed */
+  confirmed(): HubLink {
+    this.#expect(["joined"], "confirm");
+    if (this.props.joinId === null) return this;
+    return new HubLink({ ...this.props, joinId: null });
+  }
+
+  /** a joined link whose join may still be replayed */
+  get replayable(): boolean {
+    return this.props.state === "joined" && this.props.joinId !== null;
   }
 
   withHubName(hubName: string): HubLink {
@@ -210,12 +227,12 @@ export class HubLink {
 
   refuse(): HubLink {
     this.#expect(["joined", "mismatched"], "refuse");
-    return new HubLink({ ...this.props, state: "refused" });
+    return new HubLink({ ...this.props, state: "refused", joinId: null });
   }
 
   mismatch(): HubLink {
     this.#expect(["joined"], "mark mismatched");
-    return new HubLink({ ...this.props, state: "mismatched" });
+    return new HubLink({ ...this.props, state: "mismatched", joinId: null });
   }
 
   #expect(states: readonly HubLinkState[], action: string): void {

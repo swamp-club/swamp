@@ -102,6 +102,9 @@ export class FakeHub {
   intervalSeconds = 30;
   hubName = "central";
   disposed = 0;
+  /** as the real hub does: each join issues a credential that replaces the last */
+  rotateCredentials = false;
+  readonly #current = new Map<string, string>();
 
   mintToken(): string {
     const token = `edge.${crypto.randomUUID()}`;
@@ -147,6 +150,8 @@ export class FakeHub {
     } else {
       return { kind: "unauthorized" };
     }
+    const credential = MemberCredential.issue(memberId);
+    this.#current.set(memberId, credential.toWire());
     if (this.dropReplies > 0) {
       this.dropReplies--;
       return { kind: "unreachable" };
@@ -156,7 +161,7 @@ export class FakeHub {
       value: {
         memberId,
         memberName: "edge",
-        credential: MemberCredential.issue(memberId),
+        credential,
         hub: this.#identity(),
         checkInIntervalSeconds: this.intervalSeconds,
       },
@@ -170,6 +175,12 @@ export class FakeHub {
     const scripted = this.scriptedCheckIns.shift();
     if (scripted !== undefined) return scripted;
     if (this.removed.has(credential.memberId)) return { kind: "unauthorized" };
+    if (
+      this.rotateCredentials &&
+      this.#current.get(credential.memberId) !== credential.toWire()
+    ) {
+      return { kind: "unauthorized" };
+    }
     this.checkIns.push({ memberId: credential.memberId, instanceId });
     return {
       kind: "ok",
