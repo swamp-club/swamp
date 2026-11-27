@@ -281,14 +281,22 @@ export interface SettingsReloadReport {
   readonly overridden: readonly { setting: string; by: string }[];
 }
 
-export interface SettingsDiffInput {
-  readonly before: ServeConfigFile | null;
-  readonly after: ServeConfigFile | null;
+interface SettingsDiffContext {
   /** flags given explicitly at startup; they win over the file */
   readonly explicitFlags: ReadonlySet<string>;
   readonly envLookup: (name: string) => string | undefined;
   /** applied settings whose consumer is not running here, with the reason */
   readonly notRunning?: Partial<Record<keyof MergedServeOptions, string>>;
+}
+
+export interface SettingsDiffInput extends SettingsDiffContext {
+  readonly before: ServeConfigFile | null;
+  readonly after: ServeConfigFile | null;
+}
+
+export interface SettingValuesDiffInput extends SettingsDiffContext {
+  readonly before: MergedServeOptions;
+  readonly after: MergedServeOptions;
 }
 
 export interface SettingChanges {
@@ -308,14 +316,28 @@ export interface SettingChanges {
 export function classifyServeSettingChanges(
   input: SettingsDiffInput,
 ): SettingChanges {
-  // only the federation gate reaches the merge; env overrides are judged below
-  const gateOnly = (name: string) =>
-    name === FEDERATION_GATE_VARIABLE ? input.envLookup(name) : undefined;
-  const fileOnly = (config: ServeConfigFile | null) =>
-    mergeServeOptions(config, {}, new Set(), gateOnly);
-  const before = fileOnly(input.before);
-  const after = fileOnly(input.after);
+  return classifySettingValueChanges({
+    ...input,
+    before: fileSettingValues(input.before, input.envLookup),
+    after: fileSettingValues(input.after, input.envLookup),
+  });
+}
 
+/** the settings a serve.yaml sets on its own, before flags and environment */
+export function fileSettingValues(
+  config: ServeConfigFile | null,
+  envLookup: (name: string) => string | undefined,
+): MergedServeOptions {
+  // only the federation gate reaches the merge; env overrides are judged apart
+  const gateOnly = (name: string) =>
+    name === FEDERATION_GATE_VARIABLE ? envLookup(name) : undefined;
+  return mergeServeOptions(config, {}, new Set(), gateOnly);
+}
+
+export function classifySettingValueChanges(
+  input: SettingValuesDiffInput,
+): SettingChanges {
+  const { before, after } = input;
   const appliedKeys: AppliedSettingKey[] = [];
   const needsRestart: { key: keyof MergedServeOptions; reason: string }[] = [];
   const overridden: { key: keyof MergedServeOptions; by: string }[] = [];
@@ -437,7 +459,7 @@ export function diffServeSettings(
 function overriddenBy(
   key: keyof MergedServeOptions,
   entry: SettingCatalogueEntry,
-  input: SettingsDiffInput,
+  input: SettingsDiffContext,
 ): string | undefined {
   if (entry.flag !== undefined && input.explicitFlags.has(entry.flag)) {
     return `--${entry.flag}`;

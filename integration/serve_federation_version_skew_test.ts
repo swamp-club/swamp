@@ -58,6 +58,16 @@ const GATE_ON = (name: string) =>
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+// a newer release's value in every fingerprint field whose set of values may grow
+const LATER_VALUES = {
+  serveYamlVersion: 3,
+  deploymentMode: "edge",
+  datastoreFormat: "v4",
+  authMode: "mtls",
+  federationRole: "relay",
+  team: { role: "observer", nodes: 3 },
+};
+
 type NewerHubRequest = { readonly repoDir: string; readonly name: string };
 type NewerHubMessage = { readonly ok: true } | { readonly error: string };
 
@@ -92,7 +102,11 @@ async function rewriteAsNewer(request: NewerHubRequest): Promise<void> {
           ...record,
           status: "stale",
           later: "x",
-          fingerprint: { ...record.fingerprint, laterField: true },
+          fingerprint: {
+            ...record.fingerprint,
+            ...LATER_VALUES,
+            laterField: true,
+          },
           instances: record.instances.map((i) => ({ ...i, later: 1 })),
         } as typeof record,
       },
@@ -102,9 +116,12 @@ async function rewriteAsNewer(request: NewerHubRequest): Promise<void> {
       const bytes = await store.get(key);
       if (bytes === null) continue;
       const value = JSON.parse(decoder.decode(bytes));
+      const runtime = key.startsWith("federation/seen/")
+        ? { runtime: { ...value.runtime, team: LATER_VALUES.team } }
+        : {};
       await store.put(
         key,
-        encoder.encode(JSON.stringify({ ...value, later: 1 })),
+        encoder.encode(JSON.stringify({ ...value, ...runtime, later: 1 })),
       );
     }
   } finally {
@@ -145,7 +162,7 @@ function post(path: string, body: unknown, credential?: string): Request {
   });
 }
 
-Deno.test("federation version skew: records a newer hub wrote are read, swept and rewritten with their fields, and a newer member's fingerprint field is dropped", async () => {
+Deno.test("federation version skew: records a newer hub wrote are read, swept and rewritten with their fields and fingerprint values, and a newer member's fingerprint field is dropped", async () => {
   resetRateLimitState();
   assert(await registerFederationModelTypes(GATE_ON));
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-federation-skew-" });
@@ -224,9 +241,18 @@ Deno.test("federation version skew: records a newer hub wrote are read, swept an
     const rewritten = await memberRecord(context, "edge-1");
     assertEquals(rewritten.content.status, "online");
     assertEquals(rewritten.content.later, "x");
+    const fingerprint = rewritten.content.fingerprint as Record<
+      string,
+      unknown
+    >;
+    assertEquals(fingerprint.laterField, true);
+    for (const [field, value] of Object.entries(LATER_VALUES)) {
+      assertEquals(fingerprint[field], value);
+    }
+    const sightings = await hub.sightings();
     assertEquals(
-      (rewritten.content.fingerprint as Record<string, unknown>).laterField,
-      true,
+      [...sightings.values()].flat().map((seen) => seen.runtime?.team),
+      [LATER_VALUES.team],
     );
     assertEquals(
       (rewritten.content.instances as Record<string, unknown>[])[0].later,
@@ -238,6 +264,7 @@ Deno.test("federation version skew: records a newer hub wrote are read, swept an
 
     const extra = await checkIn(credential, {
       ...sampleFingerprintProps(),
+      ...LATER_VALUES,
       newerField: "secret-host.internal",
     });
     assertEquals(extra.status, 200);

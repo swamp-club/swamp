@@ -2220,7 +2220,8 @@ export interface WorkerListReply {
 /** What a running serve last reported; never part of the member's record history. */
 export interface FederationMemberRuntime {
   team: {
-    role: "leader" | "follower" | "peer" | "single";
+    /** leader, follower, peer or single today; a later swamp may report another */
+    role: string;
     nodes: number;
   } | null;
   startedAt: string | null;
@@ -2241,20 +2242,26 @@ export interface FederationMemberLiveView {
   instances: FederationMemberLiveInstance[];
 }
 
+/** A member on a later swamp may report values this release does not list; they arrive as written. */
 export interface FederationMemberFingerprint {
   swampVersion: string;
   platform: string;
   arch: string;
-  serveYamlVersion: 1 | 2;
-  deploymentMode: "local" | "durable" | "durable (limited)";
+  /** 1 or 2 today */
+  serveYamlVersion: number;
+  /** local, durable or durable (limited) today */
+  deploymentMode: string;
   datastoreKind: string;
-  datastoreFormat: "v2" | "v3";
+  /** v2 or v3 today */
+  datastoreFormat: string;
   vaultKinds: string[];
-  authMode: "none" | "token" | "oauth";
+  /** none, token or oauth today */
+  authMode: string;
   tls: boolean;
   remoteOnly: boolean;
   loopbackOnly: boolean;
-  federationRole: "hub" | "member" | "none";
+  /** hub, member or none today */
+  federationRole: string;
   extensions: { name: string; version: string }[];
   settingsHash: string;
   workers: {

@@ -203,3 +203,76 @@ Deno.test("Fingerprint: extra keys never change the contract fields or the hash,
     ),
   );
 });
+
+const KNOWN = {
+  serveYamlVersion: [1, 2],
+  deploymentMode: ["local", "durable", "durable (limited)"],
+  datastoreFormat: ["v2", "v3"],
+  authMode: ["none", "token", "oauth"],
+  federationRole: ["hub", "member", "none"],
+  teamRole: ["leader", "follower", "peer", "single"],
+};
+
+const anyValue = fc.string({ minLength: 1, maxLength: 40 });
+
+Deno.test("Fingerprint property: a hub round-trips any value in the open fields; only the known ones pass create", () => {
+  fc.assert(
+    fc.property(
+      fc.record({
+        serveYamlVersion: fc.integer({ min: 1, max: 1_000 }),
+        deploymentMode: anyValue,
+        datastoreFormat: anyValue,
+        authMode: anyValue,
+        federationRole: anyValue,
+        teamRole: anyValue,
+      }),
+      ({ teamRole, ...values }) => {
+        const input = {
+          ...sampleProps(),
+          ...values,
+          team: { role: teamRole, nodes: 2 },
+        };
+        const wire = Fingerprint.fromWire(input);
+        assertEquals(wire.toJSON(), input);
+        assertEquals(Fingerprint.fromRecord(wire.toJSON()).toJSON(), input);
+        const known =
+          KNOWN.serveYamlVersion.includes(values.serveYamlVersion) &&
+          KNOWN.deploymentMode.includes(values.deploymentMode) &&
+          KNOWN.datastoreFormat.includes(values.datastoreFormat) &&
+          KNOWN.authMode.includes(values.authMode) &&
+          KNOWN.federationRole.includes(values.federationRole) &&
+          KNOWN.teamRole.includes(teamRole);
+        if (known) {
+          assertEquals(Fingerprint.create(input).toJSON(), wire.toJSON());
+        } else {
+          assertThrows(() => Fingerprint.create(input));
+        }
+      },
+    ),
+  );
+});
+
+Deno.test("Fingerprint property: every known value parses the same on the wire as in a serve's own fingerprint", () => {
+  fc.assert(
+    fc.property(
+      fc.record({
+        serveYamlVersion: fc.constantFrom(...KNOWN.serveYamlVersion),
+        deploymentMode: fc.constantFrom(...KNOWN.deploymentMode),
+        datastoreFormat: fc.constantFrom(...KNOWN.datastoreFormat),
+        authMode: fc.constantFrom(...KNOWN.authMode),
+        federationRole: fc.constantFrom(...KNOWN.federationRole),
+        teamRole: fc.constantFrom(...KNOWN.teamRole),
+      }),
+      ({ teamRole, ...values }) => {
+        const input = {
+          ...sampleProps(),
+          ...values,
+          team: { role: teamRole, nodes: 2 },
+        };
+        const own = Fingerprint.create(input);
+        assertEquals(Fingerprint.fromWire(input).toJSON(), own.toJSON());
+        assertEquals(Fingerprint.fromWire(input).hash(), own.hash());
+      },
+    ),
+  );
+});

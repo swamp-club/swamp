@@ -23,6 +23,7 @@ import {
   alertRulesFrom,
   auditPolicyFrom,
   diffAuditConfig,
+  runningAuditConfig,
 } from "./serve_audit_reload.ts";
 
 function audit(block: Record<string, unknown>) {
@@ -113,4 +114,71 @@ Deno.test("auditPolicyFrom and alertRulesFrom: build what the audit block descri
   );
   assertEquals(alertRulesFrom(config).map((rule) => rule.name), ["denials"]);
   assertEquals(alertRulesFrom(config)[0].threshold.windowSeconds, 60);
+});
+
+function reloadTwice(
+  start: ReturnType<typeof audit> | null,
+  next: ReturnType<typeof audit> | null,
+) {
+  const first = diffAuditConfig(start, next);
+  const running = runningAuditConfig(start, next, first);
+  return { first, second: diffAuditConfig(running, next) };
+}
+
+Deno.test("runningAuditConfig: a restart-only audit change is reported on every reload", () => {
+  const { first, second } = reloadTwice(
+    audit(BASE),
+    audit({
+      ...BASE,
+      stores: [{ target: "datastore" }, { target: "local" }],
+      hmac: { enabled: true, vault: "v", key: "k" },
+    }),
+  );
+  assertEquals(first.needsRestart, second.needsRestart);
+  assertEquals(second.needsRestart.map((entry) => entry.setting), [
+    "audit.stores",
+    "audit.hmac",
+  ]);
+});
+
+Deno.test("runningAuditConfig: an applied audit change is reported once while a restart-only one beside it repeats", () => {
+  const { first, second } = reloadTwice(
+    audit(BASE),
+    audit({
+      ...BASE,
+      "fail-open": false,
+      policy: { "default-level": "request" },
+      wal: { "max-size": "10MB" },
+    }),
+  );
+  assertEquals(first.applied, ["audit.policy", "audit.fail-open"]);
+  assertEquals(second.applied, []);
+  assertEquals(second.needsRestart.map((entry) => entry.setting), [
+    "audit.wal",
+  ]);
+});
+
+Deno.test("runningAuditConfig: turning audit on or off is reported on every reload", () => {
+  assertEquals(
+    reloadTwice(null, audit(BASE)).second.needsRestart.map((e) => e.setting),
+    ["audit"],
+  );
+  assertEquals(
+    reloadTwice(audit(BASE), null).second.needsRestart.map((e) => e.setting),
+    ["audit"],
+  );
+});
+
+Deno.test("runningAuditConfig: reverting the file clears what was waiting for a restart", () => {
+  const start = audit(BASE);
+  const changed = audit({ ...BASE, wal: { "max-size": "10MB" } });
+  const running = runningAuditConfig(
+    start,
+    changed,
+    diffAuditConfig(start, changed),
+  );
+  assertEquals(diffAuditConfig(running, start), {
+    applied: [],
+    needsRestart: [],
+  });
 });

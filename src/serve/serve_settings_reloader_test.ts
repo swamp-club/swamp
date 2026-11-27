@@ -339,3 +339,124 @@ Deno.test("createServeSettingsReloader: a follow-up carrying a setting that land
     { setting: "dashboard", reason: "this node does not lead" },
   ]);
 });
+
+function restartSettings(report: SettingsReloadReport): string[] {
+  return report.needsRestart.map((entry) => entry.setting);
+}
+
+Deno.test("createServeSettingsReloader: a setting that needs a restart is reported on every reload until the file reverts", async () => {
+  const h = harness({ port: 9090 });
+  const reloader = createServeSettingsReloader(h.deps);
+  h.file = { port: 9191 };
+  assertEquals(restartSettings((await reloader(reload)).report), ["port"]);
+  assertEquals(restartSettings((await reloader(reload)).report), ["port"]);
+  h.file = { port: 9090 };
+  const reverted = await reloader(reload);
+  assertEquals(reverted.report.needsRestart, []);
+  assertEquals(reverted.report.applied, []);
+});
+
+Deno.test("createServeSettingsReloader: a restart setting changed again is still reported against the running value", async () => {
+  const h = harness({ port: 9090 });
+  const reloader = createServeSettingsReloader(h.deps);
+  h.file = { port: 9191 };
+  await reloader(reload);
+  h.file = { port: 9292 };
+  assertEquals(restartSettings((await reloader(reload)).report), ["port"]);
+});
+
+Deno.test("createServeSettingsReloader: an applied setting is reported once while a restart setting beside it repeats", async () => {
+  const h = harness({ port: 9090 });
+  const reloader = createServeSettingsReloader(h.deps);
+  h.file = { port: 9191, "max-concurrent-runs": 3 };
+  const first = await reloader(reload);
+  assertEquals(first.report.applied, ["max-concurrent-runs"]);
+  assertEquals(restartSettings(first.report), ["port"]);
+  h.calls.length = 0;
+  const second = await reloader(reload);
+  assertEquals(second.report.applied, []);
+  assertEquals(h.calls.includes("apply:maxConcurrentRuns"), false);
+  assertEquals(restartSettings(second.report), ["port"]);
+});
+
+Deno.test("createServeSettingsReloader: a setting whose consumer is not running stays reported on the next reload", async () => {
+  const h = harness(null, {
+    notRunning: () => ({ triggerOverrides: "no scheduler runs here" }),
+  });
+  const reloader = createServeSettingsReloader(h.deps);
+  h.file = { triggers: { nightly: { schedule: "0 3 * * *" } } };
+  await reloader(reload);
+  const again = await reloader(reload);
+  assertEquals(restartSettings(again.report), ["triggers"]);
+  assertEquals(h.calls.includes("apply:triggerOverrides"), false);
+});
+
+Deno.test("createServeSettingsReloader: a setting pinned by a startup flag is reported overridden on every reload", async () => {
+  const h = harness(null, { explicitFlags: new Set(["max-concurrent-runs"]) });
+  const reloader = createServeSettingsReloader(h.deps);
+  h.file = { "max-concurrent-runs": 3 };
+  const by = [{ setting: "max-concurrent-runs", by: "--max-concurrent-runs" }];
+  assertEquals((await reloader(reload)).report.overridden, by);
+  assertEquals((await reloader(reload)).report.overridden, by);
+  assertEquals(h.calls.includes("apply:maxConcurrentRuns"), false);
+});
+
+Deno.test("createServeSettingsReloader: a follow-up setting that landed partly is in force, so the next reload leaves it and a revert applies it", async () => {
+  const h = harness(null, {
+    followUps: (_candidate, _prepared, applied) =>
+      applied.includes("dashboard")
+        ? [{
+          name: "Revoking admin grants",
+          settings: ["dashboard"],
+          run: () => Promise.resolve({ partial: "this node does not lead" }),
+        }]
+        : [],
+  });
+  const reloader = createServeSettingsReloader(h.deps);
+  h.file = { dashboard: true };
+  const first = await reloader(reload);
+  await first.followUp();
+  assertEquals(first.report.needsRestart, [
+    { setting: "dashboard", reason: "this node does not lead" },
+  ]);
+  h.calls.length = 0;
+  const again = await reloader(reload);
+  await again.followUp();
+  assertEquals(again.report.applied, []);
+  assertEquals(h.calls.includes("apply:dashboard"), false);
+  h.file = null;
+  h.calls.length = 0;
+  const reverted = await reloader(reload);
+  await reverted.followUp();
+  assertEquals(reverted.report.applied, ["dashboard"]);
+  assertEquals(h.calls.includes("apply:dashboard"), true);
+});
+
+Deno.test("createServeSettingsReloader: a follow-up setting that failed is retried, and a revert still applies the file's value", async () => {
+  let fail = true;
+  const h = harness(null, {
+    followUps: (_candidate, _prepared, applied) =>
+      applied.includes("dashboard")
+        ? [{
+          name: "Revoking admin grants",
+          settings: ["dashboard"],
+          run: () =>
+            fail
+              ? Promise.reject(new Error("datastore unreachable"))
+              : Promise.resolve(),
+        }]
+        : [],
+  });
+  const reloader = createServeSettingsReloader(h.deps);
+  h.file = { dashboard: true };
+  await (await reloader(reload)).followUp();
+  fail = false;
+  h.file = null;
+  h.calls.length = 0;
+  const reverted = await reloader(reload);
+  await reverted.followUp();
+  assertEquals(h.calls.includes("apply:dashboard"), true);
+  h.calls.length = 0;
+  await (await reloader(reload)).followUp();
+  assertEquals(h.calls.includes("apply:dashboard"), false);
+});

@@ -20,7 +20,9 @@
 import type { MergedServeOptions, ServeConfigFile } from "./serve_config.ts";
 import {
   type AppliedSettingKey,
-  classifyServeSettingChanges,
+  classifySettingValueChanges,
+  fileSettingValues,
+  overlayAppliedSettings,
   settingName,
   type SettingsReloadReport,
 } from "./serve_settings_reload.ts";
@@ -69,7 +71,6 @@ export interface ServeSettingsReloaderDeps<S, P> {
   prepare(
     candidate: ReloadCandidate<S>,
     changed: readonly AppliedSettingKey[],
-    before: ServeConfigFile | null,
   ): Promise<P>;
   /** settings outside the catalogue, such as the audit block */
   extraChanges?(prepared: P): {
@@ -126,7 +127,10 @@ export interface SettingsReloadOutcome {
 export function createServeSettingsReloader<S, P>(
   deps: ServeSettingsReloaderDeps<S, P>,
 ): (context: ServeReloadCaller) => Promise<SettingsReloadOutcome> {
-  let liveConfig = deps.initialConfig;
+  const envLookup = (name: string) => deps.envLookup(name);
+  // the file's values this process runs: a setting not applied keeps its old
+  // value here, so every reload reports it until a restart or a revert
+  let running = fileSettingValues(deps.initialConfig, envLookup);
   // settings whose follow-up failed; every reload tries them again
   const retry = new Set<AppliedSettingKey>();
   return async (context) => {
@@ -134,18 +138,19 @@ export function createServeSettingsReloader<S, P>(
     const merged = deps.merge(file);
     const startup = deps.resolve(merged);
     const candidate: ReloadCandidate<S> = { file, merged, startup };
-    const changes = classifyServeSettingChanges({
-      before: liveConfig,
-      after: file,
+    const fileValues = fileSettingValues(file, envLookup);
+    const changes = classifySettingValueChanges({
+      before: running,
+      after: fileValues,
       explicitFlags: deps.explicitFlags,
-      envLookup: (name) => deps.envLookup(name),
+      envLookup,
       notRunning: deps.notRunning(candidate),
     });
     const toApply = [...changes.applied];
     for (const key of [...deps.pending(), ...retry]) {
       if (!toApply.includes(key)) toApply.push(key);
     }
-    const prepared = await deps.prepare(candidate, toApply, liveConfig);
+    const prepared = await deps.prepare(candidate, toApply);
     const extra = deps.extraChanges?.(prepared) ??
       { applied: [], needsRestart: [] };
 
@@ -183,7 +188,8 @@ export function createServeSettingsReloader<S, P>(
     for (const setting of extra.applied) applied.push(setting);
     const notes = deps.commitExtra?.(prepared) ?? [];
     deps.afterCommit(candidate, toApply, prepared);
-    liveConfig = file;
+    const previous = running;
+    running = overlayAppliedSettings(running, fileValues, toApply);
     for (const key of toApply) retry.delete(key);
 
     let report: SettingsReloadReport = { applied, needsRestart, overridden };
@@ -217,6 +223,8 @@ export function createServeSettingsReloader<S, P>(
               );
               continue;
             }
+            // a partial result is in force and stays in running; a failed one is not
+            running = overlayAppliedSettings(running, previous, carried);
             for (const key of carried) {
               notLanded.push(key);
               retry.add(key);

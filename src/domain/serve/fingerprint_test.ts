@@ -209,3 +209,49 @@ Deno.test("computeSettingsHash: steps-require-explicit-grant joins the hash only
     computeSettingsHash(SETTINGS),
   );
 });
+
+const UNKNOWN_VALUES: [string, (props: FingerprintProps) => unknown][] = [
+  ["serveYamlVersion", (p) => ({ ...p, serveYamlVersion: 3 })],
+  ["deploymentMode", (p) => ({ ...p, deploymentMode: "edge" })],
+  ["datastoreFormat", (p) => ({ ...p, datastoreFormat: "v4" })],
+  ["authMode", (p) => ({ ...p, authMode: "mtls" })],
+  ["federationRole", (p) => ({ ...p, federationRole: "relay" })],
+  ["team.role", (p) => ({ ...p, team: { role: "observer", nodes: 3 } })],
+];
+
+for (const [field, withUnknown] of UNKNOWN_VALUES) {
+  Deno.test(`Fingerprint: a hub accepts and keeps a ${field} value this swamp does not define, its own fingerprint refuses it`, () => {
+    const input = withUnknown(sampleProps());
+    const received = Fingerprint.fromWire(input);
+    assertEquals(received.toJSON(), input);
+    assertEquals(Fingerprint.fromRecord(received.toJSON()).toJSON(), input);
+    assertThrows(() => Fingerprint.create(input));
+  });
+}
+
+Deno.test("Fingerprint.fromWire: an unknown static value moves the hash, an unknown team role does not", () => {
+  const base = Fingerprint.fromWire(sampleProps());
+  const mode = Fingerprint.fromWire({
+    ...sampleProps(),
+    deploymentMode: "edge",
+  });
+  const role = Fingerprint.fromWire({
+    ...sampleProps(),
+    team: { role: "observer", nodes: 3 },
+  });
+  assertNotEquals(mode.hash(), base.hash());
+  assertEquals(role.hash(), base.hash());
+});
+
+Deno.test("Fingerprint.fromWire: still refuses an empty value and a serve.yaml version that is not a positive integer", () => {
+  for (
+    const input of [
+      { ...sampleProps(), authMode: "" },
+      { ...sampleProps(), serveYamlVersion: 0 },
+      { ...sampleProps(), serveYamlVersion: 2.5 },
+      { ...sampleProps(), serveYamlVersion: "3" },
+    ]
+  ) {
+    assertThrows(() => Fingerprint.fromWire(input));
+  }
+});

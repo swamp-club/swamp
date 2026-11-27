@@ -20,7 +20,11 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { sampleFingerprint } from "../../domain/serve/federation_test_helpers.ts";
+import {
+  sampleFingerprint,
+  sampleFingerprintProps,
+} from "../../domain/serve/federation_test_helpers.ts";
+import { Fingerprint } from "../../domain/serve/fingerprint.ts";
 import { MemberName } from "../../domain/serve/member_name.ts";
 import { ServeMember } from "../../domain/serve/serve_member.ts";
 import type { JoinTokenView } from "../../domain/serve/join_token.ts";
@@ -270,4 +274,53 @@ Deno.test("renderMemberList: a last-seen time that does not parse shows '-', nev
   );
   assertEquals(list.includes("0s ago"), false);
   assertEquals(list.split("\n")[1].split(/\s{2,}/)[3], "-");
+});
+
+Deno.test("renderMemberList and renderMemberGet: a fingerprint value this swamp does not define prints as written in both modes", () => {
+  const later = ServeMember.join({
+    memberId: crypto.randomUUID(),
+    name: MemberName.create("edge-9"),
+    role: "member",
+    fingerprint: Fingerprint.fromWire({
+      ...sampleFingerprintProps(),
+      serveYamlVersion: 3,
+      deploymentMode: "edge",
+      datastoreFormat: "v4",
+      authMode: "mtls",
+      federationRole: "relay",
+    }),
+    now: NOW,
+  }).toJSON();
+  const member = {
+    ...later,
+    live: {
+      lastSeenAt: new Date(NOW - 4_000).toISOString(),
+      instances: [{
+        instanceId: INSTANCE,
+        lastSeenAt: new Date(NOW - 4_000).toISOString(),
+        runtime: {
+          team: { role: "observer", nodes: 3 },
+          startedAt: null,
+          ready: null,
+        },
+      }],
+    },
+  };
+  const get = captured(() => renderMemberGet({ member }, "log", NOW));
+  assertStringIncludes(get, "Mode: edge");
+  assertStringIncludes(get, "(v4)");
+  assertStringIncludes(get, "Auth mode: mtls");
+  assertStringIncludes(get, "observer of 3");
+  assertStringIncludes(
+    captured(() => renderMemberList({ members: [member] }, "log", NOW)),
+    "edge-9",
+  );
+  assertEquals(
+    JSON.parse(captured(() => renderMemberGet({ member }, "json"))),
+    { member },
+  );
+  assertEquals(
+    JSON.parse(captured(() => renderMemberList({ members: [member] }, "json"))),
+    { members: [member] },
+  );
 });

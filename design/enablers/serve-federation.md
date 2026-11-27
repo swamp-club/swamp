@@ -168,7 +168,9 @@ reports the config version with the gate on. `src/serve/serve_config.ts`,
 field or any field outside the contract, for what a serve collects itself. The
 hub reads a member's report with `fromWire()`, which drops fields outside its
 contract, and a stored record with `fromRecord()`, which keeps them for the
-rewrite but leaves them out of `hash()` and every field it reads. `FingerprintCollector` builds
+rewrite but leaves them out of `hash()` and every field it reads. Both
+accept any value in a field whose set of values may grow (below), so only
+`create()` holds a value to the lists this swamp defines. `FingerprintCollector` builds
 one from ports for build info, merged settings, deployment classification,
 vault types, extensions and worker records. The domain never reads YAML, the
 lockfile or the datastore itself. `src/domain/serve/fingerprint.ts`,
@@ -311,6 +313,14 @@ as the `federation member` stage and marks the instance stopped.
 
 Only these fields. Adding one is an architecture decision.
 
+The value lists below bind only a serve's own fingerprint. A hub accepts, stores
+and shows as written any non-empty string for `deploymentMode`,
+`datastoreFormat`, `authMode`, `federationRole` and `team.role`, and any
+positive integer for `serveYamlVersion`, so a member on a later swamp keeps
+joining and checking in, and an older hub of a team reads a newer hub's record.
+An unknown value is part of the fingerprint like any other: in a static field it
+moves `hash()` and cuts a version.
+
 | Field              | Type                                                    | Source                                 | Class   |
 | ------------------ | ------------------------------------------------------- | -------------------------------------- | ------- |
 | `swampVersion`     | string                                                  | build info                             | static  |
@@ -402,7 +412,9 @@ the gate on.
 - A body over 64 KiB gets 413. Another `protocolVersion` gets 400 naming the
   supported one. A fingerprint refusal names the field path and echoes nothing
   the caller sent. Fingerprint fields outside the hub's contract, sent by a
-  member on a newer swamp, are dropped and never stored or versioned.
+  member on a newer swamp, are dropped and never stored or versioned. A value
+  the hub does not know, in a field whose set of values may grow, is accepted
+  and stored as written.
 - Both sides ignore unknown `capabilities` strings, so slice 2 can add verbs
   without a protocol bump.
 - In team mode a follower forwards the body to its leader, which applies every
@@ -524,6 +536,7 @@ gets it rather than the writer's lock.
 | A member-only request schema                                         | As for the hub: a serve that is not a member keeps today's schema and payload-field list.                                                                                                                                                   |
 | Control-plane records several versions read ignore unknown fields    | A hub team in a rolling upgrade mixes versions. A record is corrupt only when a field it knows is missing or wrong, never for a field it does not know.                                                                                     |
 | Stored records keep unknown keys; the wire fingerprint drops them    | An older hub rewriting a newer hub's record must not strip its fields. A member may run newer swamp than its hub; the hub stores only what its allowlist knows, so a new field never creates a version.                                     |
+| A hub accepts any value in a fingerprint field whose values may grow | Hubs run older swamp than some members once federation ships, and the tolerance must be in the first released hub: a value a later release adds would otherwise be refused with 400. Only a serve's own fingerprint uses the closed lists, so this swamp never emits a value it does not define. |
 | A stalled node heals through the retained `joinId`, not fencing      | Compare-and-set or claim fencing would need a conditional put on `ControlPlaneStore` that every datastore extension implements. One replay under the claim settles it.                                                                    |
 | `admittedAt` on the join token                                       | A replay must finish a join the hub crashed in, but must not recreate a member an operator deleted.                                                                                                                                         |
 | The hub keeps one seen record and lists one instance                 | After a restart or a new leader, the live view and `serve member list` agree on one hub instance.                                                                                                                                           |
