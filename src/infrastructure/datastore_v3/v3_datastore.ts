@@ -1160,10 +1160,25 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
               : {}),
           }, { fence, writer, forwarded: true, signal });
         },
-        // full: the state still holds the dropped commits a targeted
-        // recovery would build on
         rebuildReadModel: async (since, signal) => {
           await readModel.recover(namespace, { since, admits, signal });
+        },
+        repairPartition: async (repair, signal) => {
+          if (repair.scope === undefined) {
+            await readModel.recover(namespace, {
+              since: repair.since,
+              admits,
+              signal,
+            });
+            return;
+          }
+          await readModel.repairPartition(
+            repair.namespace,
+            PartitionKey.parse(repair.partition),
+            repair.fromSeq - 1,
+            repair.scope,
+            { since: repair.since, admits, signal },
+          );
         },
         principal: () => serveState.checkedPrincipal(),
       },

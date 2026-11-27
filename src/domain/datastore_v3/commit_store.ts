@@ -499,6 +499,15 @@ export interface CommitStore {
     names: readonly string[],
   ): Promise<PartitionBase>;
 
+  /**
+   * Which put the compacted base shows `key` at, undefined when it holds no
+   * row for it; optional, a store without it never answers
+   */
+  baseFileOwnership?(
+    namespace: string,
+    key: string,
+  ): Promise<FileOwnership | undefined>;
+
   /** One record of a partition's compacted base, undefined when it holds none. */
   readBaseRecord(
     namespace: string,

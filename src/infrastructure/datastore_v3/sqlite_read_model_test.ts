@@ -65,6 +65,7 @@ import { CatalogStore } from "../persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../persistence/unified_data_repository.ts";
 import { Data } from "../../domain/data/data.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
+import { catalogNamesOfCommit } from "../../domain/datastore_v3/name_history_replay.ts";
 import { ReadModelState } from "./read_model_state.ts";
 import { DurableWriteBatch } from "./atomic_stream_write.ts";
 import {
@@ -75,6 +76,7 @@ import {
   AT_RISK_LIST_EVERY_MS,
   CATALOG_V3_FILE,
   OwedContentOfflineError,
+  type PartitionRepairScope,
   READ_MODEL_LOCK_FILE,
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
@@ -5134,4 +5136,762 @@ Deno.test("SqliteReadModel.catchUp: a base load stages many base pages in one tr
       );
     }
   });
+});
+
+function otherModelId(i: number): string {
+  return `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+}
+
+function modelPartitionOf(id: string) {
+  return partitionOf({ kind: "model", type: MODEL_TYPE, id });
+}
+
+function modelKeyOf(
+  id: string,
+  name: string,
+  version: number,
+  file = "raw",
+): RecordKey {
+  return RecordKey.create(
+    `data/${MODEL_TYPE.normalized}/${id}/${name}/${version}/${file}`,
+  );
+}
+
+function putOf(
+  id: string,
+  name: string,
+  version: number,
+  text = `${name}@${version}`,
+  key = modelKeyOf(id, name, version),
+): Promise<PutOp> {
+  return putOp({
+    intent: createIntent({
+      kind: "data.save",
+      name,
+      version,
+      model: modelRef(MODEL_TYPE, id),
+    }),
+    key,
+    inline: base64(text),
+  });
+}
+
+function versionOf(id: string, name: string, version: number): Op {
+  return dataVersionOp({
+    key: modelKeyOf(id, name, version, "metadata.yaml"),
+    metadata: metadata(name, version),
+  });
+}
+
+function deleteOf(id: string, name: string, version: number): Op {
+  return tombstoneOp({
+    intent: createIntent({
+      kind: "data.delete",
+      name,
+      version,
+      model: modelRef(MODEL_TYPE, id),
+    }),
+    key: modelKeyOf(id, name, version),
+  });
+}
+
+async function appendTo(
+  store: SqliteCommitStore,
+  id: string,
+  seq: number,
+  ops: readonly Op[],
+  txnId = `txn-${id}-${seq}`,
+): Promise<void> {
+  await store.append(
+    modelCommit(seq, ops, { partition: modelPartitionOf(id), txnId }),
+  );
+}
+
+async function repairScopeOf(
+  store: SqliteCommitStore,
+  partition: ReturnType<typeof modelPartitionOf>,
+  fromSeq: number,
+): Promise<PartitionRepairScope> {
+  const changes = await store.readPartition("", partition, fromSeq, 10_000);
+  const keys = new Set<string>();
+  const names = new Set<string>();
+  for (const { commit } of changes) {
+    for (const op of commit.ops) {
+      if (op.kind === "put" || op.kind === "tombstone") {
+        keys.add(op.key.toString());
+      }
+    }
+    for (const name of catalogNamesOfCommit(commit)) names.add(name);
+  }
+  return {
+    keys: [...keys].sort(),
+    names: [...names].sort(),
+    minCursor: Math.min(...changes.map((change) => change.cursor)),
+  };
+}
+
+async function dropAndRepair(
+  store: SqliteCommitStore,
+  readModel: SqliteReadModel,
+  partition: ReturnType<typeof modelPartitionOf>,
+  fromSeq: number,
+  scope?: PartitionRepairScope,
+): Promise<{ path: unknown; fallback: unknown; commits: unknown }> {
+  const repairScope = scope ?? await repairScopeOf(store, partition, fromSeq);
+  await store.dropObservedFrom("", partition, fromSeq);
+  let found: { path: unknown; fallback: unknown; commits: unknown } = {
+    path: undefined,
+    fallback: undefined,
+    commits: undefined,
+  };
+  await withCapturedSpans(async (spans) => {
+    await readModel.repairPartition("", partition, fromSeq - 1, repairScope, {
+      since: 0,
+      admits: () => true,
+      signal: signal(),
+    });
+    const span = findSpan(
+      spans,
+      "swamp.datastore.v3.readmodel.repair_partition",
+    );
+    found = {
+      path: span.attributes[
+        "swamp.datastore.v3.readmodel.repair_partition.path"
+      ],
+      fallback: span.attributes[
+        "swamp.datastore.v3.readmodel.repair_partition.fallback"
+      ],
+      commits: span.attributes["swamp.datastore.v3.commits"],
+    };
+  });
+  return found;
+}
+
+const COMPARED_STATE_TABLES = [
+  "partition_progress",
+  "live_records",
+  "data_versions",
+  "materialised_keys",
+  "owed_files",
+  "unreadable_records",
+];
+
+async function projectionOf(repoDir: string): Promise<unknown> {
+  const stateDir = readModelStateDir(repoDir);
+  const state = new DatabaseSync(join(stateDir, READ_MODEL_STATE_FILE), {
+    readOnly: true,
+  });
+  const tables: Record<string, unknown> = {};
+  try {
+    for (const table of COMPARED_STATE_TABLES) {
+      tables[table] = state.prepare(`SELECT * FROM ${table} ORDER BY 1, 2, 3`)
+        .all();
+    }
+  } finally {
+    state.close();
+  }
+  const catalog = new DatabaseSync(join(stateDir, CATALOG_V3_FILE), {
+    readOnly: true,
+  });
+  try {
+    tables.catalog = catalog.prepare(
+      "SELECT namespace, type_normalized, model_id, data_name, version, id, size FROM catalog ORDER BY 1, 2, 3, 4, 5",
+    ).all();
+  } finally {
+    catalog.close();
+  }
+  const files: Record<string, string> = {};
+  const root = v3CacheRoot(repoDir, "");
+  const walkDir = async (dir: string, prefix: string) => {
+    let entries: Deno.DirEntry[];
+    try {
+      entries = await Array.fromAsync(Deno.readDir(dir));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+      if (rel === "data" || rel.startsWith("data/")) {
+        if (entry.isDirectory) await walkDir(join(dir, entry.name), rel);
+        else files[rel] = await Deno.readTextFile(join(dir, entry.name));
+      } else if (prefix === "" && entry.isDirectory && entry.name === "data") {
+        await walkDir(join(dir, entry.name), rel);
+      }
+    }
+  };
+  await walkDir(root, "");
+  return {
+    tables,
+    files: Object.fromEntries(
+      Object.entries(files).sort(([a], [b]) => (a < b ? -1 : 1)),
+    ),
+  };
+}
+
+async function freshProjection(env: Env): Promise<unknown> {
+  const repoDir = join(dirname(env.repoDir), `fresh-${crypto.randomUUID()}`);
+  const fresh = SqliteReadModel.open({
+    commitStore: env.store,
+    chunkStore: env.chunkStore,
+    cacheRoot: (ns) => v3CacheRoot(repoDir, ns),
+    stateDir: readModelStateDir(repoDir),
+    follower: true,
+  });
+  try {
+    await fresh.catchUp(signal());
+  } finally {
+    await fresh.close();
+  }
+  return await projectionOf(repoDir);
+}
+
+const FOLLOWER = { follower: true };
+
+Deno.test("SqliteReadModel.repairPartition: rolls back only the diverged partition, reading no other partition's commits and never clearing the catalog (swamp-club#5127)", async () => {
+  await withEnv(async (env) => {
+    const p = MODEL_ID;
+    const partition = modelPartitionOf(p);
+    for (let i = 1; i <= 20; i++) {
+      const id = otherModelId(i);
+      await appendTo(env.store, id, 1, [
+        await putOf(id, "u", 1),
+        versionOf(id, "u", 1),
+      ]);
+    }
+    await appendTo(env.store, p, 1, [
+      await putOf(p, "a", 1),
+      versionOf(p, "a", 1),
+    ]);
+    await appendTo(env.store, p, 2, [
+      await putOf(p, "b", 1),
+      versionOf(p, "b", 1),
+    ]);
+    // the diverged tail: a version bump, a tombstone and a new name
+    await appendTo(env.store, p, 3, [
+      await putOf(p, "a", 2),
+      versionOf(p, "a", 2),
+    ]);
+    await appendTo(env.store, p, 4, [deleteOf(p, "b", 1)]);
+    await appendTo(env.store, p, 5, [
+      await putOf(p, "c", 1),
+      versionOf(p, "c", 1),
+    ]);
+    const stateDir = readModelStateDir(env.repoDir);
+    const clears: string[] = [];
+    const inner = V3Catalog.open(join(stateDir, CATALOG_V3_FILE));
+    const catalog = new Proxy(inner, {
+      get(target, property, receiver) {
+        if (property === "clear" || property === "clearInSlices") {
+          clears.push(property);
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const reads: string[] = [];
+    const feedRead: string[] = [];
+    const store = env.store;
+    const counting = new Proxy(store, {
+      get(target, property, receiver) {
+        if (property === "readPartition") {
+          return (...args: Parameters<SqliteCommitStore["readPartition"]>) => {
+            reads.push(args[1].toString());
+            return target.readPartition(...args);
+          };
+        }
+        if (property === "changesSince") {
+          return async (
+            ...args: Parameters<SqliteCommitStore["changesSince"]>
+          ) => {
+            const page = await target.changesSince(...args);
+            for (const { commit } of page) {
+              feedRead.push(commit.partition.toString());
+            }
+            return page;
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const readModel = env.open({ ...FOLLOWER, catalog, commitStore: counting });
+    try {
+      await readModel.catchUp(signal());
+      assertEquals(await readOrAbsent(env.contentPath("", "c", 1)), "c@1");
+      assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), undefined);
+      reads.length = 0;
+      feedRead.length = 0;
+      clears.length = 0;
+
+      const repaired = await dropAndRepair(env.store, readModel, partition, 3);
+
+      assertEquals(repaired.path, "targeted");
+      assertEquals(repaired.commits, 0, "no commit was applied");
+      // a kept inline put is read back by its position
+      assertEquals(
+        [...new Set([...reads, ...feedRead])],
+        [partition.toString()],
+        "only the repaired partition's commits were read",
+      );
+      assertEquals(clears, [], "the catalog was never cleared");
+      assertEquals(await readOrAbsent(env.contentPath("", "a", 1)), "a@1");
+      assertEquals(await readOrAbsent(env.contentPath("", "a", 2)), undefined);
+      assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), "b@1");
+      assertEquals(await readOrAbsent(env.contentPath("", "c", 1)), undefined);
+      assertEquals(
+        await projectionOf(env.repoDir),
+        await freshProjection(env),
+      );
+
+      // serve's lineage replaces the dropped tail
+      await appendTo(env.store, p, 3, [
+        await putOf(p, "c", 1, "c from serve"),
+        versionOf(p, "c", 1),
+      ], "serve-3");
+      await readModel.catchUp(signal());
+      assertEquals(
+        await readOrAbsent(env.contentPath("", "c", 1)),
+        "c from serve",
+      );
+      assertEquals(
+        await projectionOf(env.repoDir),
+        await freshProjection(env),
+      );
+    } finally {
+      await readModel.close();
+    }
+  }, FOLLOWER);
+});
+
+Deno.test("SqliteReadModel.repairPartition: a key put then tombstoned in the kept history keeps its first put's mark, and a dropped put-then-tombstone leaves no row (swamp-club#5127)", async () => {
+  await withEnv(async (env) => {
+    const p = MODEL_ID;
+    const partition = modelPartitionOf(p);
+    await appendTo(env.store, p, 1, [
+      await putOf(p, "y", 1),
+      versionOf(p, "y", 1),
+    ]);
+    await appendTo(env.store, p, 2, [deleteOf(p, "y", 1)]);
+    await appendTo(env.store, p, 3, [
+      await putOf(p, "y", 1, "y again"),
+      versionOf(p, "y", 1),
+    ]);
+    await appendTo(env.store, p, 4, [
+      await putOf(p, "x", 1),
+      versionOf(p, "x", 1),
+    ]);
+    await appendTo(env.store, p, 5, [deleteOf(p, "x", 1)]);
+    const readModel = env.open(FOLLOWER);
+    try {
+      await readModel.catchUp(signal());
+      const repaired = await dropAndRepair(env.store, readModel, partition, 3);
+      assertEquals(repaired.path, "targeted");
+      assertEquals(
+        await projectionOf(env.repoDir),
+        await freshProjection(env),
+      );
+    } finally {
+      await readModel.close();
+    }
+  }, FOLLOWER);
+});
+
+Deno.test("SqliteReadModel.repairPartition: a partition whose kept history starts in the compacted base rolls back to the base's rows as a replay loads them (swamp-club#5127)", async () => {
+  await withEnv(async (env) => {
+    const p = MODEL_ID;
+    const partition = modelPartitionOf(p);
+    await appendTo(env.store, p, 1, [
+      await putOf(p, "a", 1),
+      versionOf(p, "a", 1),
+    ]);
+    await appendTo(env.store, p, 2, [
+      await putOf(p, "z", 1),
+      versionOf(p, "z", 1),
+    ]);
+    await appendTo(env.store, p, 3, [deleteOf(p, "z", 1)]);
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    await appendTo(env.store, p, 4, [
+      await putOf(p, "b", 1),
+      versionOf(p, "b", 1),
+    ]);
+    // dropped: rewrites a base-held key, revives a base tombstone, adds one
+    await appendTo(env.store, p, 5, [
+      await putOf(p, "a", 1, "a rewritten"),
+      versionOf(p, "a", 1),
+    ]);
+    await appendTo(env.store, p, 6, [
+      await putOf(p, "z", 1, "z revived"),
+      versionOf(p, "z", 1),
+      await putOf(p, "n", 1),
+      versionOf(p, "n", 1),
+    ]);
+    const readModel = env.open(FOLLOWER);
+    try {
+      await readModel.catchUp(signal());
+      assertEquals(
+        await readOrAbsent(env.contentPath("", "a", 1)),
+        "a rewritten",
+      );
+      const repaired = await dropAndRepair(env.store, readModel, partition, 5);
+      assertEquals(repaired.path, "targeted");
+      assertEquals(await readOrAbsent(env.contentPath("", "a", 1)), "a@1");
+      assertEquals(await readOrAbsent(env.contentPath("", "z", 1)), undefined);
+      assertEquals(
+        await projectionOf(env.repoDir),
+        await freshProjection(env),
+      );
+    } finally {
+      await readModel.close();
+    }
+  }, FOLLOWER);
+});
+
+Deno.test("SqliteReadModel.repairPartition: each case it cannot show sound rebuilds the whole read model, recording why (swamp-club#5127)", async () => {
+  const cases: {
+    readonly name: string;
+    readonly fallback: string;
+    readonly arrange?: (env: Env) => void | Promise<void>;
+    readonly scope?: (
+      scope: PartitionRepairScope,
+    ) => PartitionRepairScope;
+    readonly keep?: number;
+  }[] = [
+    {
+      name: "a key of another aggregate",
+      fallback: "key_outside_partition",
+      scope: (scope) => ({
+        ...scope,
+        keys: [...scope.keys, modelKeyOf(otherModelId(1), "u", 1).toString()],
+      }),
+    },
+    {
+      name: "a key another partition holds live",
+      fallback: "shared_key",
+      arrange: async (env) => {
+        const id = otherModelId(2);
+        await appendTo(env.store, id, 1, [
+          await putOf(id, "c", 1, "theirs", modelKeyOf(MODEL_ID, "c", 1)),
+        ]);
+      },
+    },
+    {
+      name: "a dropped put the scope leaves out",
+      fallback: "scope_incomplete",
+      scope: (scope) => ({
+        ...scope,
+        keys: scope.keys.filter((key) => !key.includes("/c/")),
+      }),
+    },
+    {
+      name: "a full rebuild left unfinished",
+      fallback: "rebuild_in_progress",
+      arrange: (env) => {
+        const state = ReadModelState.open(
+          join(readModelStateDir(env.repoDir), READ_MODEL_STATE_FILE),
+        );
+        try {
+          state.markRebuildStarted(false, 0);
+        } finally {
+          state.close();
+        }
+      },
+    },
+    {
+      name: "a base load part way",
+      fallback: "base_load_staged",
+      arrange: (env) => {
+        const state = ReadModelState.open(
+          join(readModelStateDir(env.repoDir), READ_MODEL_STATE_FILE),
+        );
+        try {
+          state.touchKeys([{ namespace: "", record_key: "data/x" }]);
+        } finally {
+          state.close();
+        }
+      },
+    },
+    {
+      name: "a copy whose head moved past the kept one",
+      fallback: "head_moved",
+      keep: 1,
+    },
+  ];
+  for (const c of cases) {
+    await withEnv(async (env) => {
+      const p = MODEL_ID;
+      const partition = modelPartitionOf(p);
+      await appendTo(env.store, p, 1, [
+        await putOf(p, "a", 1),
+        versionOf(p, "a", 1),
+      ]);
+      await appendTo(env.store, p, 2, [
+        await putOf(p, "a", 2),
+        versionOf(p, "a", 2),
+      ]);
+      await appendTo(env.store, p, 3, [
+        await putOf(p, "c", 1),
+        versionOf(p, "c", 1),
+      ]);
+      const readModel = env.open(FOLLOWER);
+      try {
+        await readModel.catchUp(signal());
+        await c.arrange?.(env);
+        if (c.fallback === "shared_key") await readModel.catchUp(signal());
+        const scope = await repairScopeOf(env.store, partition, 3);
+        await env.store.dropObservedFrom("", partition, 3);
+        await withCapturedSpans(async (spans) => {
+          await readModel.repairPartition(
+            "",
+            partition,
+            c.keep ?? 2,
+            c.scope?.(scope) ?? scope,
+            { since: 0, admits: () => true, signal: signal() },
+          );
+          const span = findSpan(
+            spans,
+            "swamp.datastore.v3.readmodel.repair_partition",
+          );
+          assertEquals(
+            span.attributes[
+              "swamp.datastore.v3.readmodel.repair_partition.path"
+            ],
+            "full",
+            c.name,
+          );
+          assertEquals(
+            span.attributes[
+              "swamp.datastore.v3.readmodel.repair_partition.fallback"
+            ],
+            c.fallback,
+            c.name,
+          );
+        });
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "c", 1)),
+          c.fallback === "shared_key" ? "theirs" : undefined,
+          c.name,
+        );
+      } finally {
+        await readModel.close();
+      }
+    }, FOLLOWER);
+  }
+});
+
+Deno.test("SqliteReadModel.repairPartition: a config partition is rebuilt whole, as its keys may be shared (swamp-club#5127)", async () => {
+  await withEnv(async (env) => {
+    const readModel = env.open(FOLLOWER);
+    try {
+      await readModel.catchUp(signal());
+      await withCapturedSpans(async (spans) => {
+        await readModel.repairPartition(
+          "",
+          partitionOf({
+            kind: "config",
+            definitionKind: "model",
+            name: "web",
+          }),
+          0,
+          { keys: ["config/models/web.yaml"], names: [], minCursor: 1 },
+          { since: 0, admits: () => true, signal: signal() },
+        );
+        const span = findSpan(
+          spans,
+          "swamp.datastore.v3.readmodel.repair_partition",
+        );
+        assertEquals(
+          span.attributes[
+            "swamp.datastore.v3.readmodel.repair_partition.fallback"
+          ],
+          "partition_kind",
+        );
+      });
+    } finally {
+      await readModel.close();
+    }
+  }, FOLLOWER);
+});
+
+Deno.test("SqliteReadModel.repairPartition: where the filesystem folds spellings, a key spelled like another the state knows rebuilds whole (swamp-club#5127)", async () => {
+  for (const folding of ["canonical", "off"] as const) {
+    await withEnv(async (env) => {
+      const p = MODEL_ID;
+      const partition = modelPartitionOf(p);
+      await appendTo(env.store, p, 1, [
+        await putOf(p, "A", 1),
+        versionOf(p, "A", 1),
+      ]);
+      await appendTo(env.store, p, 2, [
+        await putOf(p, "a", 1),
+        versionOf(p, "a", 1),
+      ]);
+      const readModel = env.open({ ...FOLLOWER, spellingFolding: folding });
+      try {
+        await readModel.catchUp(signal());
+        const repaired = await dropAndRepair(
+          env.store,
+          readModel,
+          partition,
+          2,
+        );
+        if (folding === "canonical") {
+          assertEquals(repaired, {
+            path: "full",
+            fallback: "folded_alias",
+            commits: repaired.commits,
+          });
+        } else {
+          assertEquals(repaired.path, "targeted");
+        }
+      } finally {
+        await readModel.close();
+      }
+    }, FOLLOWER);
+  }
+});
+
+Deno.test("SqliteReadModel.repairPartition: a kept file that cannot be put back rebuilds the whole read model in the same call (swamp-club#5127)", async () => {
+  await withEnv(async (env) => {
+    const p = MODEL_ID;
+    const partition = modelPartitionOf(p);
+    // a kept put whose chunk no store holds: the read model applied it as
+    // unreadable, and a dropped put replaced it
+    const missing = await env.chunkStore.write(
+      SOLO_NAMESPACE,
+      new TextEncoder().encode("lost content"),
+      signal(),
+    );
+    await appendTo(env.store, p, 1, [
+      await blobPut("a", 1, missing),
+      versionOf(p, "a", 1),
+    ]);
+    await appendTo(env.store, p, 2, [
+      await putOf(p, "a", 1, "a replaced"),
+      versionOf(p, "a", 1),
+    ]);
+    const storage = new MemoryStorage();
+    const readModel = env.open({
+      ...FOLLOWER,
+      chunkStore: new ChunkStore(storage),
+    });
+    try {
+      await readModel.catchUp(signal());
+      assertEquals(
+        await readOrAbsent(env.contentPath("", "a", 1)),
+        "a replaced",
+      );
+      const repaired = await dropAndRepair(env.store, readModel, partition, 2);
+      assertEquals(repaired.path, "full");
+      assertEquals(repaired.fallback, "restore_failed");
+      assertEquals(await readOrAbsent(env.contentPath("", "a", 1)), undefined);
+      const state = new DatabaseSync(
+        join(readModelStateDir(env.repoDir), READ_MODEL_STATE_FILE),
+        { readOnly: true },
+      );
+      try {
+        assertEquals(
+          state.prepare(
+            "SELECT 1 FROM meta WHERE key = 'partition_repair'",
+          ).get(),
+          undefined,
+          "the full rebuild cleared the rollback's marker",
+        );
+      } finally {
+        state.close();
+      }
+    } finally {
+      await readModel.close();
+    }
+  }, FOLLOWER);
+});
+
+Deno.test("SqliteReadModel.repairPartition: a repair cut short after the rollback is never read half done: the next section replays every commit, and the repair run again rebuilds whole (swamp-club#5127)", async () => {
+  await withEnv(async (env) => {
+    const p = MODEL_ID;
+    const partition = modelPartitionOf(p);
+    await appendTo(env.store, p, 1, [
+      await putOf(p, "a", 1),
+      versionOf(p, "a", 1),
+    ]);
+    await appendTo(env.store, p, 2, [
+      await putOf(p, "a", 2),
+      versionOf(p, "a", 2),
+    ]);
+    const stateDir = readModelStateDir(env.repoDir);
+    const controller = new AbortController();
+    let cut = true;
+    const inner = V3Catalog.open(join(stateDir, CATALOG_V3_FILE));
+    const catalog = new Proxy(inner, {
+      get(target, property, receiver) {
+        if (property === "apply") {
+          return (...args: Parameters<V3Catalog["apply"]>) => {
+            // the process dies once the state rolled back
+            if (cut && args[2].length > 0 && !controller.signal.aborted) {
+              const state = new DatabaseSync(
+                join(stateDir, READ_MODEL_STATE_FILE),
+                { readOnly: true },
+              );
+              const marked = state.prepare(
+                "SELECT 1 FROM meta WHERE key = 'partition_repair'",
+              ).get() !== undefined;
+              state.close();
+              if (marked) {
+                controller.abort(new Error("power cut"));
+                throw new Error("power cut");
+              }
+            }
+            return target.apply(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const readModel = env.open({ ...FOLLOWER, catalog });
+    try {
+      await readModel.catchUp(signal());
+      const scope = await repairScopeOf(env.store, partition, 2);
+      await env.store.dropObservedFrom("", partition, 2);
+      await assertRejects(
+        () =>
+          readModel.repairPartition("", partition, 1, scope, {
+            since: 0,
+            admits: () => true,
+            signal: controller.signal,
+          }),
+        Error,
+        "power cut",
+      );
+      cut = false;
+      await withCapturedSpans(async (spans) => {
+        await readModel.repairPartition("", partition, 1, scope, {
+          since: 0,
+          admits: () => true,
+          signal: signal(),
+        });
+        const span = findSpan(
+          spans,
+          "swamp.datastore.v3.readmodel.repair_partition",
+        );
+        assertEquals(
+          span.attributes["swamp.datastore.v3.readmodel.repair_partition.path"],
+          "full",
+        );
+        assertEquals(
+          span.attributes[
+            "swamp.datastore.v3.readmodel.repair_partition.fallback"
+          ],
+          "state_reset",
+        );
+      });
+      await readModel.catchUp(signal());
+      assertEquals(
+        await projectionOf(env.repoDir),
+        await freshProjection(env),
+      );
+    } finally {
+      await readModel.close();
+    }
+  }, FOLLOWER);
 });
