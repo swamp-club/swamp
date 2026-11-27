@@ -1886,13 +1886,18 @@ class DatastoreApi {
       after + 1,
       limit,
     );
-    const head = await this.#v3.commitStore.head(this.#namespace, partition);
+    const head = await this.#partitionHeadShown(
+      partition,
+      (await this.#v3.commitStore.head(this.#namespace, partition)).seq,
+      held ?? after,
+    );
     // Each commit is filtered as the changes feed filters it: a partition
     // can hold commits its identity alone cannot tell apart, such as a
     // control-plane definition sharing a name with an ordinary one
     // (swamp-club#3938).
     const commits: unknown[] = [];
     for (const change of page) {
+      if (change.commit.seq > head) break;
       if (
         await this.#mayReadCommit(change.commit.partition, change.commit.ops)
       ) {
@@ -1900,7 +1905,46 @@ class DatastoreApi {
         if (json !== undefined) commits.push(json);
       }
     }
-    return Response.json({ head: head.seq, commits });
+    return Response.json({ head, commits });
+  }
+
+  /**
+   * a leader shows a partition only through its commits a takeover would keep,
+   * never below what the caller holds, which would read to it as a rewind
+   */
+  async #partitionHeadShown(
+    partition: PartitionKey,
+    head: number,
+    holds: number,
+  ): Promise<number> {
+    if (this.#deps.ctx.followerGate?.role === "follower") return head;
+    const bound = this.#deps.ctx.commitFeed?.bound();
+    if (bound === undefined || head <= holds) return head;
+    const shown = async (seq: number): Promise<boolean> => {
+      try {
+        const [change] = await this.#v3.commitStore.readPartition(
+          this.#namespace,
+          partition,
+          seq,
+          1,
+        );
+        return change === undefined || change.commit.seq !== seq ||
+          change.cursor <= bound;
+      } catch (error) {
+        // compacted away: only replicated state is ever compacted
+        if (error instanceof CommitsCompactedError) return true;
+        throw error;
+      }
+    };
+    if (await shown(head)) return head;
+    let low = Math.max(holds, 0);
+    let high = head;
+    while (high - low > 1) {
+      const mid = Math.floor((low + high) / 2);
+      if (await shown(mid)) low = mid;
+      else high = mid;
+    }
+    return low;
   }
 
   /**
@@ -1976,12 +2020,10 @@ class DatastoreApi {
     limit: number,
     maxBytes?: number,
   ): Promise<{ changes: ChangeEntryJson[]; cursor: number; more: boolean }> {
-    // A follower pages only to the last commit whose effects it applied:
-    // a commit past it would be filtered under a policy older than it, and
-    // the cursor would move past it for good (swamp-club#4207).
-    const bound = this.#deps.ctx.followerGate?.role === "follower"
-      ? this.#deps.ctx.commitFeed?.bound()
-      : undefined;
+    // a follower stops at the last commit whose effects it applied, as a later
+    // one would be filtered under an older policy; a leader stops at what it
+    // replicated, which a takeover keeps
+    const bound = this.#deps.ctx.commitFeed?.bound();
     const kept: ChangeEntryJson[] = [];
     let next = cursor;
     let scanned = 0;
