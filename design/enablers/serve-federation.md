@@ -164,8 +164,11 @@ reports the config version with the gate on. `src/serve/serve_config.ts`,
 | `HubLink`              | Entity              | member control-plane store, `federation/link/`      | 3    |
 | `MemberCheckInService` | Application service | member                                              | 3    |
 
-`Fingerprint` can be created only through `Fingerprint.create()`, which refuses
-a missing field or any field outside the contract. `FingerprintCollector` builds
+`Fingerprint` is created through `Fingerprint.create()`, which refuses a missing
+field or any field outside the contract, for what a serve collects itself. The
+hub reads a member's report with `fromWire()`, which drops fields outside its
+contract, and a stored record with `fromRecord()`, which keeps them for the
+rewrite but leaves them out of `hash()` and every field it reads. `FingerprintCollector` builds
 one from ports for build info, merged settings, deployment classification,
 vault types, extensions and worker records. The domain never reads YAML, the
 lockfile or the datastore itself. `src/domain/serve/fingerprint.ts`,
@@ -178,7 +181,9 @@ worker. It is not a model type. Only its hash is stored, in the hub's
 control-plane store at `federation/tokens/<name>`, whose history is its audit
 trail. Its wire form is `<name>.<secret>`. On first use it also records the
 hash of the join's `joinId`, which lets that member, and only that member,
-replay the join (see "Protocol"). Its reader ignores fields it does not know.
+replay the join (see "Protocol"). Once the member record is written it records
+`admittedAt`. Its reader keeps fields it does not know, and so does every hub
+rewrite of it.
 
 A member credential has the wire form `swfm1.<memberId>.<secret>`. Its sha256
 hash is kept at `federation/credentials/<memberId>` in the control-plane store
@@ -188,7 +193,10 @@ A `ServeMember` holds the member's id, name, role, current fingerprint, status
 and instances. It holds no secret and no hash of one. `swamp/serve-member` is
 the first built-in `swamp/` type that is user data rather than control-plane
 data, so `data:read` reads it. The hub writes it only through the type's
-methods with literal inputs. A member record gets a new data version only when
+methods with literal inputs. Every hub of a team reads it, so it keeps keys it
+does not know, at the top, in each instance and in the fingerprint, and writes
+them back unchanged. A fingerprint a member's check-in replaces carries only
+the fields the hub that wrote it knows. A member record gets a new data version only when
 its fingerprint hash, its pool summary or its status changes. Its versions are
 its history and can be queried with `data.query`. Runtime fields never create a
 version. Check-in times go to the control-plane store under
@@ -196,15 +204,20 @@ version. Check-in times go to the control-plane store under
 `{ at, runtime: { team, startedAt, ready } }`, the runtime fields of that
 check-in's fingerprint; a record written before runtime was carried reads with
 no runtime. The leader writes the hub's own seen record under the hub record's
-id every check-in interval (`HubSelfRecord`). The sweeper keeps it until the
-TTL and never derives the hub's status from it.
+id every check-in interval (`HubSelfRecord`), and removes the hub's seen records
+of any other instance, so after a restart or a new leader the hub has one. The
+hub's record lists that one instance. The sweeper never derives the hub's
+status from it. The hub reports serve's own readiness in it. Seen records are
+read eight at a time.
 
 `federation.member.list` and `.get` answer each record with a `live` view beside
 it: per instance its last check-in and runtime facts, freshest first, and the
 freshest time. It comes only from the seen records, never from the record's own
 instance list. A binary from before Unit 4.1 parses seen records strictly and
 deletes this shape in its sweep, so a hub team on mixed versions can show
-members going stale until the old leader is replaced.
+members going stale until the old leader is replaced. Every reader since ignores
+fields it does not know. Each reply carries the hub's `now`, which
+`swamp serve member` reads ages against.
 
 An instance id must be a UUID before any key is built from it. A member has at
 most 64 live instances. An instance unseen for 24 hours is pruned.
@@ -216,9 +229,13 @@ record, with role `hub`, written only by the leading node.
 
 Every token and member write on the hub runs on one `federation` transition
 tail. Join verifies the token, checks the name, marks the token used, then
-writes the credential and the member record, so a token is never reusable. A
-replay replaces the member's credential and writes no record; when the record
-is missing because the hub stopped mid-join, the replay writes it.
+writes the credential and the member record, then marks the token
+`admittedAt`, so a token is never reusable. A replay replaces the member's
+credential and writes no record. When the record is missing and the token was
+never admitted, the hub stopped mid-join and the replay writes it; when it was
+admitted, the record was deleted and the replay gets 401. Members are removed
+with `swamp serve member remove`, never by deleting their data. A token spent
+before `admittedAt` existed still re-admits.
 Remove marks the record removed, then deletes the credential.
 `src/domain/serve/`, `src/serve/federation/`.
 
@@ -228,7 +245,10 @@ A member's `HubLink` holds the hub URL, its member id and name, the hub's name
 and when it joined, in one of five states: `unjoined`, `joining`, `joined`,
 `refused` or `mismatched`. A `joining` link also holds the `joinId` of its open
 join, which with the join token could replay it, so no view, log or audit event
-shows it; a settled link holds none. It lives in the member's
+shows it. A `joined` link keeps it until a check-in succeeds with the stored
+credential; a refused or mismatched link holds none. A member binary from before
+that reads a joined link holding a `joinId` as corrupt, so every node of a
+member team runs this version or later. It lives in the member's
 control-plane store at `federation/link/record`, beside the store a rebuilt
 instance on the same datastore reads, so a rebuild is the same member. Each
 instance's last attempt, result, backoff and an `aliveAt` time go under
@@ -250,7 +270,9 @@ it. At start it decides from the link, the stored credential and `serve.yaml`:
 
 A join or the removal of a stray credential runs only under the join claim,
 `federation/member/join-claim`, taken with `putIfAbsent` and taken over once it
-is two minutes old. Nodes that lose it look for the credential every 5 seconds.
+is two minutes old. A takeover deletes the stale claim only if it still reads
+as it did, and a node checks it still holds the claim before calling the hub.
+Nodes that lose it look for the credential every 5 seconds, quietly.
 Before a join request leaves, the member writes the link as `joining` with a
 new `joinId`, a lower-case UUID. A start that finds a `joining` link with no
 credential of its own retries that join with the stored `joinId`, even if
@@ -267,10 +289,15 @@ Each instance checks in with serve's own process `instanceId`, at the reply's
 `checkInIntervalSeconds` clamped to 5 s – 1 h with ±10 % jitter. A network
 error, `5xx`, `429` or refusal backs off exponentially from the interval to 5
 minutes with jitter, and `retry-after` is a floor. `409` waits the full 5
-minutes. A `401` on check-in marks the link `refused` and deletes the credential,
-only when both still belong to that member, then stops until restart; a later
-start with a `join-token-file` joins as a new member, even to another hub. A
-`401` on join is logged once and not retried until restart.
+minutes. A `401` on check-in first looks at the stored credential: one another
+node stored for the same member is taken up. Otherwise, under the join claim, a
+join not yet confirmed is replayed once with the stored `joinId`, which heals a
+node that stalled and stored a credential the hub had already replaced. Failing
+that, the link is marked `refused` and the credential deleted, only when both
+still belong to that member, and check-ins stop until restart; a later start
+with a `join-token-file` joins as a new member, even to another hub. A `401` on
+join is logged once and not retried until restart. A mismatched or idle member
+records why on its instance (`mismatched`, `not_joining` or `refused`).
 
 The member's calls take a 10 second timeout and abort on shutdown, never follow
 a redirect, verify TLS with serve's `--ca-cert` roots added, and read at most
@@ -374,7 +401,8 @@ the gate on.
   does not parse.
 - A body over 64 KiB gets 413. Another `protocolVersion` gets 400 naming the
   supported one. A fingerprint refusal names the field path and echoes nothing
-  the caller sent.
+  the caller sent. Fingerprint fields outside the hub's contract, sent by a
+  member on a newer swamp, are dropped and never stored or versioned.
 - Both sides ignore unknown `capabilities` strings, so slice 2 can add verbs
   without a protocol bump.
 - In team mode a follower forwards the body to its leader, which applies every
@@ -431,13 +459,19 @@ serve, and on a v2 extension datastore, where serve may keep the control-plane
 store remotely. `token create` prints the join token once.
 `src/cli/commands/serve_member*.ts`.
 
+`swamp serve member list` and `get` show ages in their largest unit, read
+against the hub's `now`.
+
 `swamp serve hub` shows the hub, the member, the link state and each instance's
-last check-in, or why it is refused, mismatched or backing off. It sends
+last check-in, or its last attempt, result and next retry while it is refused,
+mismatched, joining or backing off. It sends
 `federation.link.get` with `--server`; locally it reads the control-plane store
 serve uses, a v2 extension datastore's remote one included. `swamp serve hub
 forget --yes` deletes the credential, then the link records. It is local only,
 and refused while any instance on the link refreshed `aliveAt` within two
-minutes, so a serve stopped without shutting down blocks it that long.
+minutes, so a serve stopped without shutting down blocks it that long. The
+refusal is checked before the repository is opened to write, so a running serve
+gets it rather than the writer's lock.
 `src/cli/commands/serve_hub*.ts`.
 
 ## Units
@@ -488,3 +522,10 @@ minutes, so a serve stopped without shutting down blocks it that long.
 | A refused link may join any hub                                      | The hub already ended it, so a new token is enough; there is nothing left to forget.                                                                                                                                                        |
 | `forget` reads `aliveAt`, not a pid file                             | serve writes a pid file only as a daemon, and `aliveAt` is refreshed in every link state, across every node on a shared store.                                                                                                              |
 | A member-only request schema                                         | As for the hub: a serve that is not a member keeps today's schema and payload-field list.                                                                                                                                                   |
+| Control-plane records several versions read ignore unknown fields    | A hub team in a rolling upgrade mixes versions. A record is corrupt only when a field it knows is missing or wrong, never for a field it does not know.                                                                                     |
+| Stored records keep unknown keys; the wire fingerprint drops them    | An older hub rewriting a newer hub's record must not strip its fields. A member may run newer swamp than its hub; the hub stores only what its allowlist knows, so a new field never creates a version.                                     |
+| A stalled node heals through the retained `joinId`, not fencing      | Compare-and-set or claim fencing would need a conditional put on `ControlPlaneStore` that every datastore extension implements. One replay under the claim settles it.                                                                    |
+| `admittedAt` on the join token                                       | A replay must finish a join the hub crashed in, but must not recreate a member an operator deleted.                                                                                                                                         |
+| The hub keeps one seen record and lists one instance                 | After a restart or a new leader, the live view and `serve member list` agree on one hub instance.                                                                                                                                           |
+| Seen records read eight at a time                                    | `member.list` stays fast on a remote control-plane store without a new store API.                                                                                                                                                           |
+| Replies carry the hub's `now`                                        | Clock skew between the CLI and the hub never skews a relative time.                                                                                                                                                                         |
