@@ -682,3 +682,42 @@ Deno.test("handleFederationRequest: a newer member's unknown fingerprint fields 
   assert(!stored.includes("secret-host"), stored);
   assert(!stored.includes('"later"'), stored);
 });
+
+const LATER_VALUES: Record<string, unknown> = {
+  serveYamlVersion: 3,
+  deploymentMode: "edge",
+  datastoreFormat: "v4",
+  authMode: "mtls",
+  federationRole: "relay",
+  team: { role: "observer", nodes: 3 },
+};
+
+for (const [field, value] of Object.entries(LATER_VALUES)) {
+  Deno.test(`handleFederationRequest: a join and a check-in reporting a ${field} this hub does not know are accepted and stored as written`, async () => {
+    resetRateLimitState();
+    const t = createTestHub();
+    const ip = address();
+    const later = { ...sampleFingerprintProps(), [field]: value };
+    const { plaintext } = await t.hub.createToken("edge-1");
+    const joinResponse = await call(
+      t,
+      post(FEDERATION_JOIN_PATH, joinBody(plaintext, { fingerprint: later })),
+      ip,
+    );
+    assertEquals(joinResponse.status, 200);
+    const { credential } = await joinResponse.json();
+    assertEquals(
+      (t.members.raw("edge-1")?.fingerprint as Record<string, unknown>)[field],
+      value,
+    );
+    const response = await call(
+      t,
+      checkIn(
+        credential,
+        checkInBody(crypto.randomUUID(), { fingerprint: later }),
+      ),
+      ip,
+    );
+    assertEquals(response.status, 200);
+  });
+}

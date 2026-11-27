@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { sampleFingerprint } from "../../domain/serve/federation_test_helpers.ts";
+import {
+  sampleFingerprint,
+  sampleFingerprintProps,
+} from "../../domain/serve/federation_test_helpers.ts";
+import { Fingerprint } from "../../domain/serve/fingerprint.ts";
 import { InstanceId } from "../../domain/serve/instance_id.ts";
 import { JoinToken } from "../../domain/serve/join_token.ts";
 import { MemberCredential } from "../../domain/serve/member_credential.ts";
@@ -719,5 +723,68 @@ Deno.test("FederationHub.join: a replay marks a token admitted when its first ad
   );
   assert(
     JoinToken.fromJSON(t.store.json("federation/tokens/edge-1")).admittedAt,
+  );
+});
+
+// values a later swamp might report in every field whose set of values may grow
+const LATER_VALUES = {
+  serveYamlVersion: 3,
+  deploymentMode: "edge",
+  datastoreFormat: "v4",
+  authMode: "mtls",
+  federationRole: "relay",
+  team: { role: "observer", nodes: 3 },
+};
+
+function laterFingerprint(): Fingerprint {
+  return Fingerprint.fromWire({ ...sampleFingerprintProps(), ...LATER_VALUES });
+}
+
+Deno.test("FederationHub.join and checkIn: a member reporting values this hub does not know joins, checks in, and its values are stored as written", async () => {
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const outcome = await t.hub.join(
+    plaintext,
+    crypto.randomUUID(),
+    laterFingerprint(),
+  );
+  if (outcome.kind !== "joined") throw new Error(outcome.kind);
+  const stored = t.members.raw("edge-1")?.fingerprint as Record<
+    string,
+    unknown
+  >;
+  for (const [field, value] of Object.entries(LATER_VALUES)) {
+    assertEquals(stored[field], value);
+  }
+
+  const parsed = MemberCredential.parse(outcome.credential);
+  const instance = InstanceId.create(crypto.randomUUID());
+  assertEquals(
+    (await t.hub.checkIn(parsed, instance, laterFingerprint())).kind,
+    "checked-in",
+  );
+  const seen = t.store.json(
+    `federation/seen/${parsed.memberId}/${instance.value}`,
+  ) as { runtime: { team: unknown } };
+  assertEquals(seen.runtime.team, LATER_VALUES.team);
+  const member = await t.members.get("edge-1");
+  assertEquals(member?.fingerprint.fields().authMode, "mtls");
+});
+
+Deno.test("FederationHub.checkIn: a member that moves to a value this hub does not know cuts a new record version", async () => {
+  const t = createTestHub();
+  const { credential } = await joined(t);
+  const parsed = MemberCredential.parse(credential);
+  const instance = InstanceId.create(crypto.randomUUID());
+  await t.hub.checkIn(parsed, instance, sampleFingerprint());
+  const version = t.members.version("edge-1");
+  t.clock.now += 30_000;
+  const outcome = await t.hub.checkIn(parsed, instance, laterFingerprint());
+  assertEquals(outcome, { kind: "checked-in", changed: true });
+  assertEquals(t.members.version("edge-1"), version + 1);
+  assertEquals(
+    (t.members.raw("edge-1")?.fingerprint as Record<string, unknown>)
+      .deploymentMode,
+    "edge",
   );
 });

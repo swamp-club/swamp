@@ -48,22 +48,44 @@ function objectOf<T extends z.ZodRawShape>(shape: T, mode: ObjectMode) {
   }
 }
 
+const CLOSED_VALUES = {
+  serveYamlVersion: z.union([z.literal(1), z.literal(2)]),
+  deploymentMode: z.enum(["local", "durable", "durable (limited)"]),
+  datastoreFormat: z.enum(["v2", "v3"]),
+  authMode: z.enum(["none", "token", "oauth"]),
+  federationRole: z.enum(["hub", "member", "none"]),
+  teamRole: z.enum(["leader", "follower", "peer", "single"]),
+};
+
+// a hub must read values a later swamp adds; the closed lists bind only what this swamp emits
+const OPEN_VALUES = {
+  serveYamlVersion: z.number().int().positive(),
+  deploymentMode: z.string().min(1),
+  datastoreFormat: z.string().min(1),
+  authMode: z.string().min(1),
+  federationRole: z.string().min(1),
+  teamRole: z.string().min(1),
+};
+
 // adding a field is an architecture decision: the allowlist is the contract
-function fingerprintSchema(mode: ObjectMode) {
+function fingerprintSchema(
+  mode: ObjectMode,
+  values: typeof CLOSED_VALUES | typeof OPEN_VALUES,
+) {
   return objectOf({
     swampVersion: z.string(),
     platform: z.string(),
     arch: z.string(),
-    serveYamlVersion: z.union([z.literal(1), z.literal(2)]),
-    deploymentMode: z.enum(["local", "durable", "durable (limited)"]),
+    serveYamlVersion: values.serveYamlVersion,
+    deploymentMode: values.deploymentMode,
     datastoreKind: z.string(),
-    datastoreFormat: z.enum(["v2", "v3"]),
+    datastoreFormat: values.datastoreFormat,
     vaultKinds: z.array(z.string()),
-    authMode: z.enum(["none", "token", "oauth"]),
+    authMode: values.authMode,
     tls: z.boolean(),
     remoteOnly: z.boolean(),
     loopbackOnly: z.boolean(),
-    federationRole: z.enum(["hub", "member", "none"]),
+    federationRole: values.federationRole,
     extensions: z.array(
       objectOf({ name: z.string(), version: z.string() }, mode),
     ),
@@ -74,7 +96,7 @@ function fingerprintSchema(mode: ObjectMode) {
       byLabelKey: countsByName,
     }, mode),
     team: objectOf({
-      role: z.enum(["leader", "follower", "peer", "single"]),
+      role: values.teamRole,
       nodes: z.number().int().positive(),
     }, mode).nullable(),
     startedAt: z.string().nullable(),
@@ -82,13 +104,13 @@ function fingerprintSchema(mode: ObjectMode) {
   }, mode);
 }
 
-export const FingerprintSchema = fingerprintSchema("strict");
+export const FingerprintSchema = fingerprintSchema("strict", CLOSED_VALUES);
 
 /** what a hub accepts from a member: a newer member's unknown fields are dropped, never stored */
-export const FingerprintWireSchema = fingerprintSchema("strip");
+export const FingerprintWireSchema = fingerprintSchema("strip", OPEN_VALUES);
 
 /** a stored record's fingerprint: a newer hub's unknown fields are read past and kept */
-export const FingerprintRecordSchema = fingerprintSchema("loose");
+export const FingerprintRecordSchema = fingerprintSchema("loose", OPEN_VALUES);
 
 export type FingerprintProps = z.infer<typeof FingerprintSchema>;
 export type FingerprintWorkers = FingerprintProps["workers"];

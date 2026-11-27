@@ -30,7 +30,7 @@ import {
   type MethodResult,
   type ModelDefinition,
 } from "../model.ts";
-import { Fingerprint, FingerprintSchema } from "../../serve/fingerprint.ts";
+import { Fingerprint, FingerprintWireSchema } from "../../serve/fingerprint.ts";
 import { MemberName } from "../../serve/member_name.ts";
 import {
   MemberRoleSchema,
@@ -60,7 +60,7 @@ async function writeMember(
 const JoinArgsSchema = z.object({
   memberId: z.string().describe("The member's UUID, minted by the hub"),
   role: MemberRoleSchema,
-  fingerprint: FingerprintSchema,
+  fingerprint: FingerprintWireSchema,
   joinedAt: z.string().datetime().optional(),
 });
 
@@ -81,7 +81,7 @@ async function join(
       memberId: args.memberId,
       name: MemberName.create(context.definition.name),
       role: args.role,
-      fingerprint: Fingerprint.fromJSON(args.fingerprint),
+      fingerprint: Fingerprint.fromWire(args.fingerprint),
       now: args.joinedAt === undefined ? Date.now() : Date.parse(args.joinedAt),
     }),
   );
