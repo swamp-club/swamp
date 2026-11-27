@@ -63,6 +63,28 @@ Deno.test("extension_source_list renderer: shows kinds line for valid source", a
   assertStringIncludes(joined, "kinds: behaviors, workflows");
 });
 
+Deno.test("extension_source_list renderer: shows apps for a source that has apps", async () => {
+  const renderer = createSourceListRenderer("log");
+  const handlers = renderer.handlers();
+  const lines = await captureLog(() => {
+    handlers.completed({
+      kind: "completed",
+      data: {
+        sources: [
+          {
+            path: "/a",
+            expandedPaths: ["/a"],
+            status: "valid",
+            hasApps: true,
+          },
+        ],
+      },
+    });
+  });
+  assertEquals(lines.some((line) => line.trim() === "contributes apps"), true);
+  assertEquals(lines.join("\n").includes("kinds:"), false);
+});
+
 Deno.test("extension_source_list renderer: omits kinds line when resolvedKinds is empty/absent", async () => {
   const renderer = createSourceListRenderer("log");
   const handlers = renderer.handlers();
@@ -103,7 +125,7 @@ Deno.test("extension_source_list renderer: no_extensions status shows message + 
     });
   });
   const joined = lines.join("\n");
-  assertStringIncludes(joined, "no extensions found");
+  assertStringIncludes(joined, "no extensions or apps found");
   assertStringIncludes(joined, "swamp extension source rm /c");
 });
 

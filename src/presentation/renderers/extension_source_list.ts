@@ -72,10 +72,10 @@ class LogSourceListRenderer implements Renderer<SourceListEvent> {
               ),
             );
           } else if (source.status === "no_extensions") {
-            writeOutput(yellow("    no extensions found"));
+            writeOutput(yellow("    no extensions or apps found"));
             writeOutput(
               dim(
-                `    Add extension files to the path, or run 'swamp extension source rm ${source.path}'.`,
+                `    Add extension files or an app to the path, or run 'swamp extension source rm ${source.path}'.`,
               ),
             );
           } else {
@@ -87,6 +87,9 @@ class LogSourceListRenderer implements Renderer<SourceListEvent> {
                   }`,
                 ),
               );
+            }
+            if (source.hasApps) {
+              writeOutput(dim("    contributes apps"));
             }
             if (source.expandedPaths.length > 1) {
               writeOutput(

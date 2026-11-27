@@ -83,6 +83,81 @@ Deno.test("sourceList: concrete path that exists but resolves to zero kinds → 
     const data = completedData(await collect(sourceList(ctx, deps)));
     assertEquals(data.sources[0].status, "no_extensions");
     assertEquals(data.sources[0].resolvedKinds, undefined);
+    assertEquals(data.sources[0].hasApps, undefined);
+  });
+});
+
+async function writeApp(sourceDir: string): Promise<void> {
+  const appDir = join(sourceDir, "extensions", "apps", "hello");
+  await Deno.mkdir(appDir, { recursive: true });
+  await Deno.writeTextFile(
+    join(appDir, "app.yaml"),
+    "name: '@acme/hello'\ntitle: Hello\nbridge: 1\ncapabilities: [runs:read]\n",
+  );
+}
+
+Deno.test("sourceList: an apps-only source is valid with hasApps and no kinds", async () => {
+  await withRepo(async (repo) => {
+    const src = join(repo, "apps-only");
+    await writeApp(src);
+    await writeSourcesYaml(repo, `sources:\n  - path: ${src}\n`);
+    const deps = await createSourceListDeps(repo);
+    const data = completedData(await collect(sourceList(ctx, deps)));
+    assertEquals(data.sources[0].status, "valid");
+    assertEquals(data.sources[0].hasApps, true);
+    assertEquals(data.sources[0].resolvedKinds, undefined);
+  });
+});
+
+Deno.test("sourceList: a source with kinds and apps reports both", async () => {
+  await withRepo(async (repo) => {
+    const src = join(repo, "both");
+    await Deno.mkdir(join(src, "extensions", "models"), { recursive: true });
+    await writeApp(src);
+    await writeSourcesYaml(repo, `sources:\n  - path: ${src}\n`);
+    const deps = await createSourceListDeps(repo);
+    const data = completedData(await collect(sourceList(ctx, deps)));
+    assertEquals(data.sources[0].status, "valid");
+    assertEquals(data.sources[0].resolvedKinds, ["models"]);
+    assertEquals(data.sources[0].hasApps, true);
+  });
+});
+
+Deno.test({
+  name:
+    "sourceList: an unreadable apps folder leaves a source with kinds valid",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withRepo(async (repo) => {
+      const src = join(repo, "models-unreadable-apps");
+      await Deno.mkdir(join(src, "extensions", "models"), { recursive: true });
+      await writeApp(src);
+      const appsDir = join(src, "extensions", "apps");
+      await Deno.chmod(appsDir, 0o000);
+      try {
+        await writeSourcesYaml(repo, `sources:\n  - path: ${src}\n`);
+        const deps = await createSourceListDeps(repo);
+        const data = completedData(await collect(sourceList(ctx, deps)));
+        assertEquals(data.sources[0].status, "valid");
+        assertEquals(data.sources[0].resolvedKinds, ["models"]);
+        assertEquals(data.sources[0].hasApps, undefined);
+      } finally {
+        await Deno.chmod(appsDir, 0o755);
+      }
+    });
+  },
+});
+
+Deno.test("sourceList: a glob whose only contribution is an app is valid", async () => {
+  await withRepo(async (repo) => {
+    const parent = join(repo, "parent");
+    await Deno.mkdir(join(parent, "empty"), { recursive: true });
+    await writeApp(join(parent, "app"));
+    await writeSourcesYaml(repo, `sources:\n  - path: ${parent}/*\n`);
+    const deps = await createSourceListDeps(repo);
+    const data = completedData(await collect(sourceList(ctx, deps)));
+    assertEquals(data.sources[0].status, "valid");
+    assertEquals(data.sources[0].hasApps, true);
   });
 });
 

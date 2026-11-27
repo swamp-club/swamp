@@ -52,7 +52,7 @@ type AnyOptions = any;
 export const extensionSourceAddCommand = new Command()
   .name("add")
   .description(
-    "Add a local extension source (standard or direct-content layout).",
+    "Add a local extension source (standard, direct-content or apps layout).",
   )
   .example(
     "Standard layout (path contains extensions/<kind>/ subdirs)",
@@ -65,6 +65,10 @@ export const extensionSourceAddCommand = new Command()
   .example(
     "Direct-content layout (path holds extension files directly)",
     "swamp extension source add ~/code/my-vault-prototype",
+  )
+  .example(
+    "Apps layout (path contains extensions/apps/<folder>/app.yaml)",
+    "swamp extension source add ~/code/my-swamp-app",
   )
   .example(
     "Restrict to a single extension kind",

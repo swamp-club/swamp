@@ -176,6 +176,16 @@ export class FilesystemAppCatalog implements AppCatalog {
   }
 }
 
+/** presence only: the app.yaml may still be refused when the catalog loads it */
+export async function hasAppDescriptors(sourceDir: string): Promise<boolean> {
+  try {
+    return (await descriptorsIn(join(sourceDir, APP_SOURCE_DIR))).length > 0;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotADirectory) return false;
+    throw error;
+  }
+}
+
 async function descriptorsIn(appsDir: string): Promise<string[]> {
   const paths: string[] = [];
   try {

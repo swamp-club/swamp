@@ -31,6 +31,7 @@ import {
   resolveExtensionKindsForSource,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import { resolveSourceBaseDirs } from "../../infrastructure/persistence/git_worktree.ts";
+import { resolveSourceHasApps } from "./source_apps.ts";
 
 export interface SourceListDeps {
   readSources: () => Promise<SwampSourcesConfig | null>;
@@ -42,6 +43,7 @@ export interface SourceListDeps {
    */
   legacyBaseDir?: string;
   resolveKinds: (source: SwampSource) => Promise<ExtensionKind[]>;
+  hasApps: (source: SwampSource) => Promise<boolean>;
 }
 
 export async function createSourceListDeps(
@@ -55,6 +57,7 @@ export async function createSourceListDeps(
     legacyBaseDir,
     resolveKinds: (source) =>
       resolveExtensionKindsForSource(source, baseDir, legacyBaseDir),
+    hasApps: (source) => resolveSourceHasApps(source, baseDir, legacyBaseDir),
   };
 }
 
@@ -95,12 +98,7 @@ export async function* sourceList(
         if (expanded.length === 0) {
           entry.status = "path_not_found";
         } else {
-          const kinds = await deps.resolveKinds(source);
-          if (kinds.length === 0) {
-            entry.status = "no_extensions";
-          } else {
-            entry.resolvedKinds = kinds;
-          }
+          await resolveContributions(deps, source, entry);
         }
       } else {
         // A path that becomes a glob only after env expansion can expand
@@ -126,12 +124,7 @@ export async function* sourceList(
         if (!exists) {
           entry.status = "path_not_found";
         } else {
-          const kinds = await deps.resolveKinds(source);
-          if (kinds.length === 0) {
-            entry.status = "no_extensions";
-          } else {
-            entry.resolvedKinds = kinds;
-          }
+          await resolveContributions(deps, source, entry);
         }
       }
     } catch {
@@ -148,4 +141,16 @@ export async function* sourceList(
     kind: "completed",
     data: { sources: entries },
   };
+}
+
+async function resolveContributions(
+  deps: SourceListDeps,
+  source: SwampSource,
+  entry: SourceListEntry,
+): Promise<void> {
+  const kinds = await deps.resolveKinds(source);
+  const hasApps = await deps.hasApps(source);
+  if (kinds.length > 0) entry.resolvedKinds = kinds;
+  if (hasApps) entry.hasApps = true;
+  if (kinds.length === 0 && !hasApps) entry.status = "no_extensions";
 }
