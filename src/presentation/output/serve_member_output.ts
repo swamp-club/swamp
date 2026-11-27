@@ -23,7 +23,11 @@ import { maxOf } from "../../domain/array_extrema.ts";
 // another serve may have supplied these strings, so log mode escapes them
 import { escapeControlCharacters as shown } from "../../domain/control_characters.ts";
 import type { MemberData } from "../../libswamp/serve/member_get.ts";
-import type { ServeMemberRecord } from "../../domain/serve/serve_member.ts";
+import {
+  type Liveness,
+  livenessFor,
+  type ServeMemberRecord,
+} from "../../domain/serve/serve_member.ts";
 import type { MemberLiveView } from "../../domain/serve/member_live_view.ts";
 import type { FingerprintRuntime } from "../../domain/serve/fingerprint.ts";
 import type { MemberTokenCreateData } from "../../libswamp/serve/member_token_create.ts";
@@ -94,6 +98,21 @@ function clockOf(data: { readonly now?: string }, fallback: number): number {
   return Number.isNaN(hubNow) ? fallback : hubNow;
 }
 
+// a check-in time that does not parse is never shown as running
+function livenessAt(iso: string, now: number): Liveness {
+  const ageMs = now - Date.parse(iso);
+  return Number.isNaN(ageMs) ? "offline" : livenessFor(ageMs);
+}
+
+function liveInstanceCount(member: ReportedMember, now: number): string {
+  if (member.live === undefined) return "-";
+  return String(
+    member.live.instances.filter((instance) =>
+      livenessAt(instance.lastSeenAt, now) === "live"
+    ).length,
+  );
+}
+
 function runtimeFacts(runtime: FingerprintRuntime | null): string {
   if (runtime === null) return "no runtime reported";
   const team = runtime.team === null
@@ -114,6 +133,7 @@ function colorState(state: string): string {
   switch (state) {
     case "unused":
     case "online":
+    case "live":
       return green(state);
     case "stale":
       return yellow(state);
@@ -206,7 +226,7 @@ export function renderMemberList(
         shown(member.role),
         shown(member.status),
         lastSeen(member.live?.lastSeenAt ?? null, now),
-        String(member.instances.length),
+        liveInstanceCount(member, now),
         shown(member.fingerprint.swampVersion),
         shown(member.joinedAt),
       ]),
@@ -277,10 +297,14 @@ export function renderMemberGet(
     }`,
   );
   for (const instance of live.instances) {
+    const state = livenessAt(instance.lastSeenAt, now);
+    const facts = state === "live"
+      ? ` ${dim(`(${runtimeFacts(instance.runtime)})`)}`
+      : "";
     lines.push(
-      `  ${shown(instance.instanceId)} ${lastSeen(instance.lastSeenAt, now)} ${
-        dim(`(${runtimeFacts(instance.runtime)})`)
-      }`,
+      `  ${shown(instance.instanceId)} ${colorState(state)} ${
+        lastSeen(instance.lastSeenAt, now)
+      }${facts}`,
     );
   }
   writeOutput(lines.join("\n"));

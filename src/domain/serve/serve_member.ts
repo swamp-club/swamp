@@ -143,10 +143,23 @@ export interface JoinProps {
   readonly now: number;
 }
 
-function statusFor(ageMs: number): MemberStatus {
-  if (ageMs < STALE_AFTER_MS) return "online";
+export type Liveness = "live" | "stale" | "offline";
+
+// shared by member status and each instance's state, so the two never disagree on thresholds
+export function livenessFor(ageMs: number): Liveness {
+  if (ageMs < STALE_AFTER_MS) return "live";
   if (ageMs < OFFLINE_AFTER_MS) return "stale";
   return "offline";
+}
+
+const STATUS_BY_LIVENESS: Readonly<Record<Liveness, MemberStatus>> = {
+  live: "online",
+  stale: "stale",
+  offline: "offline",
+};
+
+function statusFor(ageMs: number): MemberStatus {
+  return STATUS_BY_LIVENESS[livenessFor(ageMs)];
 }
 
 export class ServeMember {
