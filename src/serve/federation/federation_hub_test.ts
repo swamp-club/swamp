@@ -665,3 +665,33 @@ Deno.test("FederationHub.sweep: rewriting a newer hub's member record keeps its 
   assertEquals(after.later, "x");
   assertEquals((after.fingerprint as Record<string, unknown>).laterField, true);
 });
+
+Deno.test("FederationHub.sightings and sweep: read at most 8 seen records at a time", async () => {
+  const t = createTestHub();
+  const { credential, memberId } = await joined(t);
+  const parsed = MemberCredential.parse(credential);
+  for (let i = 0; i < 20; i++) {
+    await t.hub.checkIn(
+      parsed,
+      InstanceId.create(crypto.randomUUID()),
+      sampleFingerprint(),
+    );
+  }
+  let inFlight = 0;
+  let peak = 0;
+  const get = t.store.get.bind(t.store);
+  t.store.get = async (key: string) => {
+    if (!key.startsWith("federation/seen/")) return await get(key);
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await Promise.resolve();
+    await Promise.resolve();
+    inFlight--;
+    return await get(key);
+  };
+  assertEquals((await t.hub.sightings()).get(memberId)?.length, 20);
+  assertEquals(peak, 8);
+  peak = 0;
+  await t.hub.sweep();
+  assertEquals(peak, 8);
+});

@@ -23,6 +23,7 @@ import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts
 import type {
   Fingerprint,
   FingerprintProps,
+  FingerprintRuntime,
 } from "../../domain/serve/fingerprint.ts";
 import { InstanceId } from "../../domain/serve/instance_id.ts";
 import { registerFederationModelTypes } from "../../domain/models/serve/federation_model_types.ts";
@@ -59,6 +60,8 @@ export interface ServeFederationHubDeps {
   readonly startedAt: string;
   /** this node's place in its team, read each time the fingerprint is */
   readonly team: () => Promise<FingerprintProps["team"]>;
+  /** serve's own readiness, as a member reports it */
+  readonly ready: () => boolean;
   readonly flush: () => Promise<void>;
 }
 
@@ -95,11 +98,7 @@ export async function buildServeFederationHub(
     fingerprint: () => collectHubFingerprint(deps),
     seen: {
       instanceId: InstanceId.create(deps.instanceId),
-      runtime: async () => ({
-        team: await deps.team(),
-        startedAt: deps.startedAt,
-        ready: true,
-      }),
+      runtime: () => hubRuntime(deps),
     },
   });
   return {
@@ -110,13 +109,25 @@ export async function buildServeFederationHub(
   };
 }
 
+/** what only the running hub knows, read fresh each time */
+export async function hubRuntime(
+  deps: Pick<ServeFederationHubDeps, "team" | "startedAt" | "ready">,
+): Promise<FingerprintRuntime> {
+  return {
+    team: await deps.team(),
+    startedAt: deps.startedAt,
+    ready: deps.ready(),
+  };
+}
+
 async function collectHubFingerprint(
   deps: ServeFederationHubDeps,
 ): Promise<Fingerprint> {
+  const { team, ready } = await hubRuntime(deps);
   return await collectServeFingerprint(deps, {
     role: "hub",
-    team: await deps.team(),
+    team,
     startedAt: deps.startedAt,
-    ready: true,
+    ready: ready ?? false,
   });
 }

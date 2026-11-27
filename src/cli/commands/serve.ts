@@ -5717,6 +5717,7 @@ export const serveCommand = new Command()
       instanceId,
       startedAt: new Date().toISOString(),
       team: serveTeam,
+      ready: () => isReady && !shuttingDown,
       flush: () => pushChangedToRemote(connectionCtx),
     });
     if (federationHub) {

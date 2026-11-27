@@ -273,6 +273,28 @@ export class ServeMember {
       : { member: this, changed: false };
   }
 
+  /** the hub's own record lists the one leader serving it now */
+  withHubInstance(
+    instanceId: InstanceId,
+    now: number,
+  ): { member: ServeMember; changed: boolean } {
+    if (this.isRemoved || this.record.role !== "hub") {
+      return { member: this, changed: false };
+    }
+    const swampVersion = this.fingerprint.fields().swampVersion;
+    const current = this.instances.find((i) =>
+      i.instanceId === instanceId.value
+    );
+    const instance = current === undefined
+      ? Instance.first(instanceId, swampVersion, now)
+      : current.withSwampVersion(swampVersion);
+    const next = new ServeMember(this.record, this.fingerprint, [instance]);
+    return next.needsNewVersionFrom(this) ||
+        current?.swampVersion !== swampVersion
+      ? { member: next, changed: true }
+      : { member: this, changed: false };
+  }
+
   /**
    * status from the freshest live instance, keyed by instance id to its last
    * check-in; an instance unseen for INSTANCE_TTL_MS is dropped

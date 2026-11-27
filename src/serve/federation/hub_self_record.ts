@@ -91,7 +91,10 @@ export class HubSelfRecord {
     if (!this.#leading || this.#stopped) return Promise.resolve();
     const next = this.#pending.then(async () => {
       try {
-        await this.#hub.upsertSelf(await this.#fingerprint());
+        await this.#hub.upsertSelf(
+          await this.#fingerprint(),
+          this.#seen?.instanceId,
+        );
       } catch (error) {
         logger.warn("Could not write the hub's own member record: {error}", {
           error: error instanceof Error ? error.message : String(error),
