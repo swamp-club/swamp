@@ -28,11 +28,10 @@ import {
 
 const FACTS: StaticFingerprintFacts = {
   datastore: {} as StaticFingerprintFacts["datastore"],
-  vaultTypes: [],
   extensions: [],
 };
 
-Deno.test("FingerprintFactsCache: reads once, and again after a settings reload, a lockfile change or a new vault type", async () => {
+Deno.test("FingerprintFactsCache: reads once, and again after a settings reload or a lockfile change", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const lockfilePath = join(dir, "upstream_extensions.json");
@@ -60,14 +59,6 @@ Deno.test("FingerprintFactsCache: reads once, and again after a settings reload,
     await cache.facts(sources, read);
     await cache.facts(sources, read);
     assertEquals(reads, 3);
-    await Deno.mkdir(join(dir, "vaults", "@acme/new-vault"), {
-      recursive: true,
-    });
-    const vaults = join(dir, "vaults");
-    const laterStill = new Date(Date.now() + 120_000);
-    await Deno.utime(vaults, laterStill, laterStill);
-    await cache.facts(sources, read);
-    assertEquals(reads, 4);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

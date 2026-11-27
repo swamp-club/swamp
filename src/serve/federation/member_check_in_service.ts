@@ -158,7 +158,7 @@ export class MemberCheckInService {
         step = await this.#nextStep();
         unreadableLogged = false;
       } catch (error) {
-        // a corrupt link fails every retry alike: once until it reads again
+        // warns once per run of failures, whatever the cause
         if (!unreadableLogged) {
           unreadableLogged = true;
           logger.warn("Federation member could not reach its link: {error}", {
@@ -414,11 +414,7 @@ export class MemberCheckInService {
     }
   }
 
-  /**
-   * a 401 on check-in: another node's replay may have replaced the credential,
-   * which this node takes up; else a join not yet confirmed is replayed once;
-   * else the link is refused. All but the first run under the join claim
-   */
+  // another node may have replaced the credential; past taking that up, all runs under the join claim
   async #afterRefusal(credential: MemberCredential): Promise<Step> {
     const adopted = await this.#storedReplacement(credential);
     if (adopted !== undefined) return adopted;
@@ -490,8 +486,8 @@ export class MemberCheckInService {
     return { kind: "check-in", credential: reply.credential };
   }
 
-  // only the link and credential of the member that was refused; a newer join
-  // is left alone. Runs under the join claim, so no join lands in between
+  // only the link and credential of the member that was refused; runs under the
+  // join claim, and a newer join is left alone
   async #refused(credential: MemberCredential): Promise<void> {
     const link = await this.#options.links.readLink();
     if (link.memberId === credential.memberId && link.holdsCredential) {
