@@ -2066,8 +2066,7 @@ const KNOWN_AUDIT_SINK_BATCH_KEYS = new Set(["size", "interval-ms"]);
 const KNOWN_AUDIT_SINK_RETRY_KEYS = new Set(["max-attempts", "backoff-ms"]);
 const KNOWN_AUDIT_SINK_FILTER_KEYS: ReadonlySet<string> = new Set(FILTER_KEYS);
 
-// version 1 never checked these mappings, so it must stay silent about them;
-// a value that is not a mapping is left to the existing shape checks
+// acts only under "reject", so it adds no version 1 warnings; non-mappings are skipped
 function rejectUnknownKeys(
   value: unknown,
   known: ReadonlySet<string>,

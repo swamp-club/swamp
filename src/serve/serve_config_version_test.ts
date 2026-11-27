@@ -127,7 +127,6 @@ const WEBHOOK_SINK = {
 };
 const SYSLOG_SINK = { type: "syslog", host: "h", port: 514 };
 
-// one typo in each audit mapping, read without complaint by version 1
 const AUDIT_TYPOS: [Record<string, unknown>, string][] = [
   [
     { stores: [STORE, { ...STORE, retension: 1 }] },
@@ -353,7 +352,7 @@ Deno.test("loadServeConfig: version 2 accepts every known key in the audit mappi
   assertEquals(config?.version, 2);
 });
 
-Deno.test("loadServeConfig: version 1 stays silent about unknown keys in the audit mappings", async () => {
+Deno.test("loadServeConfig: version 1 adds no unknown-key warnings for the audit mappings", async () => {
   for (const env of [GATE_ON, GATE_OFF]) {
     for (const [audit] of AUDIT_TYPOS) {
       const keys = await unknownKeyWarnings(() => {
