@@ -1195,7 +1195,7 @@ Deno.test("streamLines: the next chunk waits for the consumer's backpressure (sw
   assertEquals(lines, ["line0", "line1", "line2"]);
 });
 
-/** streamLines' text before it kept each read's lines as one piece */
+/** the text of output split into lines, CR dropped from each LF-ended line when normalizing */
 function linesTextOf(
   chunks: readonly string[],
   normalizeCrlf: boolean,

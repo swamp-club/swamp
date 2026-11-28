@@ -1383,9 +1383,9 @@ async function bigChunkedCommit(
 
 Deno.test("createServeCommitSink: chunks serve lost before the commit are resent within the inline budget, the rest put ahead (swamp-club#5180)", async () => {
   await withCheckout(async ({ serve, cache, sink }) => {
-    // eight chunks: three ride inline, five go ahead and are then lost, so
+    // thirteen chunks: six ride inline, seven go ahead and are then lost, so
     // the resend names more than one commit's inline budget
-    const { commit, hashes } = await bigChunkedCommit(cache, 8);
+    const { commit, hashes } = await bigChunkedCommit(cache, 13);
     serve.postFaults.push({ kind: "collect", hashes });
 
     assertEquals(await sink.append(commit), { kind: "appended", seq: 1 });
@@ -1404,17 +1404,42 @@ Deno.test("createServeCommitSink: chunks serve lost before the commit are resent
 
 Deno.test("createServeCommitSink: chunk uploads serve keeps failing count toward the commit's attempts, then it fails without sending (swamp-club#5180)", async () => {
   await withCheckout(async ({ serve, cache, sink }) => {
-    const { commit } = await bigChunkedCommit(cache);
+    const { commit } = await bigChunkedCommit(cache, 13);
     serve.failsPuts = new ServeUpstreamError(
       500,
       "internal_error",
       "Internal error",
     );
-    for (let attempt = 1; attempt <= CARRIED_SEND_ATTEMPTS + 2; attempt++) {
+    for (let attempt = 1; attempt <= CARRIED_SEND_ATTEMPTS; attempt++) {
       const error = await assertRejects(() => sink.append(commit));
       assert(error instanceof ServeUpstreamError, `attempt ${attempt}`);
     }
-    assertEquals(serve.requests.putChunk, CARRIED_SEND_ATTEMPTS);
+    const uploadsWhenSpent = serve.requests.putChunk;
+    assert(uploadsWhenSpent >= CARRIED_SEND_ATTEMPTS);
+    await assertRejects(() => sink.append(commit), ServeUpstreamError);
+    assertEquals(serve.requests.putChunk, uploadsWhenSpent, "no upload after");
     assertEquals(serve.requests.postCommit, 0);
+  });
+});
+
+Deno.test("createServeCommitSink: a failed upload on the resend of lost chunks counts once toward the commit's attempts (swamp-club#5180)", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    const { commit, hashes } = await bigChunkedCommit(cache, 13);
+    serve.postFaults.push({ kind: "collect", hashes });
+    serve.failsPuts = new ServeUpstreamError(
+      500,
+      "internal_error",
+      "Internal error",
+    );
+    // the first send's seven uploads land; every one after fails
+    serve.failsPutsAfter = 7;
+    for (let attempt = 1; attempt <= CARRIED_SEND_ATTEMPTS + 2; attempt++) {
+      await assertRejects(() => sink.append(commit));
+    }
+    assertEquals(
+      serve.requests.putChunk - 7,
+      CARRIED_SEND_ATTEMPTS,
+      "one failed upload per attempt until they are spent",
+    );
   });
 });
