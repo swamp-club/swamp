@@ -84,24 +84,16 @@ export async function streamLines(
   const reader = stream.getReader();
   let sliceStart = performance.now();
   const decoder = new TextDecoder();
-  // each read's lines are kept as one joined piece, so a large output's
-  // millions of line strings are let go as it streams
-  const pieces: string[] = [];
-  let lines: string[] = [];
-  const keepLines = () => {
-    if (lines.length === 0) return;
-    pieces.push(lines.join("\n"));
-    lines = [];
-  };
+  // the output is kept as the bytes read and decoded once at the end, so no
+  // per-read strings outlive their lines
+  const output = new OutputBytes(options.normalizeCrlf === true);
   // the unterminated line's pieces, joined once it ends: re-splitting a growing
   // buffer on every read is quadratic in a long line
   let open: string[] = [];
   const emit = (line: string) => {
-    const kept = options.normalizeCrlf && line.endsWith("\r")
-      ? line.slice(0, -1)
-      : line;
-    lines.push(kept);
-    onLine?.(kept);
+    onLine?.(
+      options.normalizeCrlf && line.endsWith("\r") ? line.slice(0, -1) : line,
+    );
   };
 
   const abortPromise = signal
@@ -125,20 +117,22 @@ export async function streamLines(
         : await reader.read();
       if (done) break;
 
-      const text = decoder.decode(value, { stream: true });
-      let start = 0;
-      for (
-        let end = text.indexOf("\n");
-        end !== -1;
-        end = text.indexOf("\n", start)
-      ) {
-        open.push(text.slice(start, end));
-        emit(open.join(""));
-        open = [];
-        start = end + 1;
+      output.append(value);
+      if (onLine) {
+        const text = decoder.decode(value, { stream: true });
+        let start = 0;
+        for (
+          let end = text.indexOf("\n");
+          end !== -1;
+          end = text.indexOf("\n", start)
+        ) {
+          open.push(text.slice(start, end));
+          emit(open.join(""));
+          open = [];
+          start = end + 1;
+        }
+        if (start < text.length) open.push(text.slice(start));
       }
-      if (start < text.length) open.push(text.slice(start));
-      keepLines();
 
       // a full pipe's reads resolve without returning to the event loop, so
       // the line work here would starve timers and I/O, a lease's renewal among them
@@ -151,10 +145,7 @@ export async function streamLines(
     }
 
     const rest = open.join("");
-    if (rest) {
-      lines.push(rest);
-      onLine?.(rest);
-    }
+    if (rest) onLine?.(rest);
   } finally {
     try {
       await reader.cancel();
@@ -168,8 +159,78 @@ export async function streamLines(
     }
   }
 
-  keepLines();
-  return pieces.join("\n");
+  return output.text();
+}
+
+/**
+ * past this no decode fits in a string, as each UTF-16 unit takes at most
+ * three bytes; the buffer reserves address space up to it, never memory
+ */
+const MAX_OUTPUT_BYTES = 3 * 2 ** 29;
+
+/** the bytes read, grown in place, with a CR before an LF dropped if asked */
+class OutputBytes {
+  private readonly buffer = new ArrayBuffer(0, {
+    maxByteLength: MAX_OUTPUT_BYTES,
+  });
+  private view = new Uint8Array(this.buffer);
+  private length = 0;
+  private overflowed = false;
+
+  constructor(private readonly normalizeCrlf: boolean) {}
+
+  append(chunk: Uint8Array): void {
+    if (this.overflowed) return;
+    const needed = this.length + chunk.byteLength;
+    if (needed > MAX_OUTPUT_BYTES) {
+      this.overflowed = true;
+      return;
+    }
+    if (needed > this.buffer.byteLength) {
+      this.buffer.resize(
+        Math.min(
+          MAX_OUTPUT_BYTES,
+          Math.max(needed, this.buffer.byteLength * 2),
+        ),
+      );
+      this.view = new Uint8Array(this.buffer);
+    }
+    if (!this.normalizeCrlf) {
+      this.view.set(chunk, this.length);
+      this.length = needed;
+      return;
+    }
+    let from = 0;
+    for (
+      let lf = chunk.indexOf(0x0a);
+      lf !== -1;
+      lf = chunk.indexOf(0x0a, lf + 1)
+    ) {
+      this.view.set(chunk.subarray(from, lf), this.length);
+      this.length += lf - from;
+      // a CR is one byte and ends any sequence it interrupts, so dropping its
+      // byte decodes as dropping it from the text
+      if (this.length > 0 && this.view[this.length - 1] === 0x0d) {
+        this.length--;
+      }
+      this.view[this.length++] = 0x0a;
+      from = lf + 1;
+    }
+    this.view.set(chunk.subarray(from), this.length);
+    this.length += chunk.byteLength - from;
+  }
+
+  /** the LF ending the output is dropped, as joining its lines drops it */
+  text(): string {
+    // as joining an output too long for a string would
+    if (this.overflowed) throw new RangeError("Invalid string length");
+    // never flushed: a sequence cut off at the end is dropped
+    const text = new TextDecoder().decode(
+      this.view.subarray(0, this.length),
+      { stream: true },
+    );
+    return text.endsWith("\n") ? text.slice(0, -1) : text;
+  }
 }
 
 const PIPE_DRAIN_GRACE_MS = 5000;

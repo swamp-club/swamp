@@ -192,3 +192,93 @@ Deno.test("streamLines: matches the re-splitting collector for any text cut at a
     { numRuns: 500 },
   );
 });
+
+/** one piece per read; the read at `abort.at` aborts and never settles */
+function pulledStream(
+  pieces: readonly Uint8Array[],
+  abort?: { at: number; controller: AbortController },
+): ReadableStream<Uint8Array> {
+  let next = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (abort && next === abort.at) {
+        abort.controller.abort();
+        return new Promise<void>(() => {});
+      }
+      if (next >= pieces.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(pieces[next++]);
+    },
+  }, { highWaterMark: 0 });
+}
+
+Deno.test("streamLines: returns what the line collector returns for any bytes in any reads, invalid UTF-8, CRLF and abort included", async () => {
+  const byte = fc.oneof(
+    fc.constantFrom(
+      0x0a,
+      0x0d,
+      0x61,
+      0xc3,
+      0xa9,
+      0xe2,
+      0x82,
+      0xac,
+      0xf0,
+      0x9f,
+      0x98,
+      0x80,
+      0xef,
+      0xbb,
+      0xbf,
+      0xff,
+      0xed,
+      0xa0,
+    ),
+    fc.integer({ min: 0, max: 255 }),
+  );
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(
+        fc.array(byte, { maxLength: 12 }).map((bytes) =>
+          Uint8Array.from(bytes)
+        ),
+        { maxLength: 10 },
+      ),
+      fc.boolean(),
+      fc.boolean(),
+      fc.option(fc.nat({ max: 10 }), { nil: undefined }),
+      async (pieces, normalizeCrlf, withOnLine, abortAt) => {
+        const controller = new AbortController();
+        const abort = abortAt === undefined
+          ? undefined
+          : { at: Math.min(abortAt, pieces.length), controller };
+        const seen: string[] = [];
+        const text = await streamLines(
+          pulledStream(pieces, abort),
+          withOnLine ? (line) => seen.push(line) : undefined,
+          abort ? controller.signal : undefined,
+          { normalizeCrlf },
+        );
+        const expected = await referenceLines(
+          abort ? pieces.slice(0, abort.at) : pieces,
+          normalizeCrlf,
+        );
+        assert(
+          text === expected.text,
+          `text ${JSON.stringify(text)} != ${JSON.stringify(expected.text)}`,
+        );
+        if (withOnLine) {
+          assert(
+            JSON.stringify(seen) === JSON.stringify(expected.lines),
+            `lines ${JSON.stringify(seen)} != ${
+              JSON.stringify(expected.lines)
+            }`,
+          );
+        }
+      },
+    ),
+    { numRuns: 2000 },
+  );
+});
