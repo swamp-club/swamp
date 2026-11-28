@@ -1352,13 +1352,14 @@ Deno.test("createServeCommitSink: a batch whose new chunks pass the batch budget
 
 const BIG_CHUNK_BYTES = 10 * 1024 * 1024;
 
-/** a commit of five 10 MiB chunks, cached here: half again past one commit's inline budget */
+/** a commit of count 10 MiB chunks, cached here */
 async function bigChunkedCommit(
   cache: CachedServeStorage,
+  count = 5,
 ): Promise<{ commit: Commit; hashes: string[] }> {
   const signal = new AbortController().signal;
   const parts: { sha256: string; size: number }[] = [];
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < count; i++) {
     const bytes = new Uint8Array(BIG_CHUNK_BYTES).fill(i + 1);
     const digest = new Uint8Array(
       await crypto.subtle.digest("SHA-256", bytes),
@@ -1382,20 +1383,22 @@ async function bigChunkedCommit(
 
 Deno.test("createServeCommitSink: chunks serve lost before the commit are resent within the inline budget, the rest put ahead (swamp-club#5180)", async () => {
   await withCheckout(async ({ serve, cache, sink }) => {
-    const { commit, hashes } = await bigChunkedCommit(cache);
+    // eight chunks: three ride inline, five go ahead and are then lost, so
+    // the resend names more than one commit's inline budget
+    const { commit, hashes } = await bigChunkedCommit(cache, 8);
     serve.postFaults.push({ kind: "collect", hashes });
 
     assertEquals(await sink.append(commit), { kind: "appended", seq: 1 });
-    const resent = serve.posted[serve.posted.length - 1];
-    assert(
-      resent.chunks.length * BIG_CHUNK_BYTES <= MAX_INLINE_CARRIED_BYTES,
-      `resent ${resent.chunks.length} chunks inline`,
-    );
-    assertEquals(
-      new Set([...resent.chunks, ...serve.uploads.map((u) => u.sha256)])
-        .size,
-      hashes.length,
-    );
+    assertEquals(serve.posted.length, 2, "sent, then resent once");
+    for (const posted of serve.posted) {
+      assert(
+        posted.chunks.length * BIG_CHUNK_BYTES <= MAX_INLINE_CARRIED_BYTES,
+        `carried ${posted.chunks.length} chunks inline`,
+      );
+    }
+    for (const hash of hashes) {
+      assert(serve.chunks.has(hash), "serve holds every chunk");
+    }
   });
 });
 
