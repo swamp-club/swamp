@@ -1349,3 +1349,69 @@ Deno.test("createServeCommitSink: a batch whose new chunks pass the batch budget
     assertEquals(MAX_BATCH_CARRIED_BYTES < LARGE_CONTENT_BYTES, true);
   });
 });
+
+const BIG_CHUNK_BYTES = 10 * 1024 * 1024;
+
+/** a commit of five 10 MiB chunks, cached here: half again past one commit's inline budget */
+async function bigChunkedCommit(
+  cache: CachedServeStorage,
+): Promise<{ commit: Commit; hashes: string[] }> {
+  const signal = new AbortController().signal;
+  const parts: { sha256: string; size: number }[] = [];
+  for (let i = 0; i < 5; i++) {
+    const bytes = new Uint8Array(BIG_CHUNK_BYTES).fill(i + 1);
+    const digest = new Uint8Array(
+      await crypto.subtle.digest("SHA-256", bytes),
+    );
+    const sha256 = Array.from(digest, (b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    await cache.put("_default", sha256, bytes, signal);
+    parts.push({ sha256, size: BIG_CHUNK_BYTES });
+  }
+  const blob = BlobRef.create({
+    sha256: await sha256Of("big-whole"),
+    size: parts.length * BIG_CHUNK_BYTES,
+    parts,
+  });
+  const commit = modelCommit(1, [await blobPut("big", 1, blob)], {
+    fence: 3,
+    principal: "local-should-not-be-sent",
+  });
+  return { commit, hashes: parts.map((part) => part.sha256) };
+}
+
+Deno.test("createServeCommitSink: chunks serve lost before the commit are resent within the inline budget, the rest put ahead (swamp-club#5180)", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    const { commit, hashes } = await bigChunkedCommit(cache);
+    serve.postFaults.push({ kind: "collect", hashes });
+
+    assertEquals(await sink.append(commit), { kind: "appended", seq: 1 });
+    const resent = serve.posted[serve.posted.length - 1];
+    assert(
+      resent.chunks.length * BIG_CHUNK_BYTES <= MAX_INLINE_CARRIED_BYTES,
+      `resent ${resent.chunks.length} chunks inline`,
+    );
+    assertEquals(
+      new Set([...resent.chunks, ...serve.uploads.map((u) => u.sha256)])
+        .size,
+      hashes.length,
+    );
+  });
+});
+
+Deno.test("createServeCommitSink: chunk uploads serve keeps failing count toward the commit's attempts, then it fails without sending (swamp-club#5180)", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    const { commit } = await bigChunkedCommit(cache);
+    serve.failsPuts = new ServeUpstreamError(
+      500,
+      "internal_error",
+      "Internal error",
+    );
+    for (let attempt = 1; attempt <= CARRIED_SEND_ATTEMPTS + 2; attempt++) {
+      const error = await assertRejects(() => sink.append(commit));
+      assert(error instanceof ServeUpstreamError, `attempt ${attempt}`);
+    }
+    assertEquals(serve.requests.putChunk, CARRIED_SEND_ATTEMPTS);
+    assertEquals(serve.requests.postCommit, 0);
+  });
+});

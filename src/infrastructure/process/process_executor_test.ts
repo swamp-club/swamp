@@ -24,6 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { basename } from "@std/path";
+import fc from "fast-check";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   executeProcess,
@@ -1192,4 +1193,56 @@ Deno.test("streamLines: the next chunk waits for the consumer's backpressure (sw
   release();
   await reading;
   assertEquals(lines, ["line0", "line1", "line2"]);
+});
+
+/** streamLines' text before it kept each read's lines as one piece */
+function linesTextOf(
+  chunks: readonly string[],
+  normalizeCrlf: boolean,
+): string {
+  const lines: string[] = [];
+  let open = "";
+  for (const chunk of chunks) {
+    const parts = (open + chunk).split("\n");
+    open = parts.pop()!;
+    for (const line of parts) {
+      lines.push(
+        normalizeCrlf && line.endsWith("\r") ? line.slice(0, -1) : line,
+      );
+    }
+  }
+  if (open) lines.push(open);
+  return lines.join("\n");
+}
+
+Deno.test("streamLines: returns the same text however the output is split into reads (swamp-club#5180)", async () => {
+  const piece = fc.constantFrom("a", "bc", "\n", "\r", "\r\n", "é", "😀", "");
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(fc.array(piece, { maxLength: 6 }), { maxLength: 8 }),
+      fc.boolean(),
+      async (reads, normalizeCrlf) => {
+        const texts = reads.map((parts) => parts.join(""));
+        const encoder = new TextEncoder();
+        // split each read's bytes in two, so a character can cross a read
+        const byteReads = texts.flatMap((text) => {
+          const bytes = encoder.encode(text);
+          const cut = Math.floor(bytes.length / 2);
+          return [bytes.slice(0, cut), bytes.slice(cut)];
+        });
+        let i = 0;
+        const stream = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (i === byteReads.length) controller.close();
+            else controller.enqueue(byteReads[i++]);
+          },
+        });
+        const got = await streamLines(stream, undefined, undefined, {
+          normalizeCrlf,
+        });
+        assertEquals(got, linesTextOf([texts.join("")], normalizeCrlf));
+      },
+    ),
+    { numRuns: 300 },
+  );
 });

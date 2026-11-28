@@ -130,6 +130,8 @@ export class FakeServe implements Client {
   readonly postFaults: PostFault[] = [];
   /** answers every commit that carries chunks with this, as a bucket write failing at serve does */
   failsCarried: Error | undefined;
+  /** answers every chunk upload with this */
+  failsPuts: Error | undefined;
   beforePost: (() => Promise<void>) | undefined;
   leaseLost: ((lease: string | undefined) => boolean) | undefined;
   changesFault: Error | undefined;
@@ -476,6 +478,7 @@ export class FakeServe implements Client {
   ): Promise<{ sha256: string; size: number }> {
     this.requests.putChunk++;
     signal.throwIfAborted();
+    if (this.failsPuts !== undefined) return Promise.reject(this.failsPuts);
     this.uploads.push({ sha256, partition: partition?.toString() });
     this.chunks.set(sha256, bytes);
     return Promise.resolve({ sha256, size: bytes.byteLength });
