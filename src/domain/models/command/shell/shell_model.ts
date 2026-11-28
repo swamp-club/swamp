@@ -380,15 +380,6 @@ async function executeCommand(
     stderr,
   };
 
-  const outputLogParts: string[] = [];
-  if (stdout) {
-    outputLogParts.push(`[stdout]\n${stdout}`);
-  }
-  if (stderr) {
-    outputLogParts.push(`[stderr]\n${stderr}`);
-  }
-  const outputLogContent = outputLogParts.join("\n");
-
   const resultHandle = await context.writeResource!(
     "result",
     "result",
@@ -396,7 +387,9 @@ async function executeCommand(
   );
 
   const logWriter = context.createFileWriter!("log", "log");
-  const logHandle = await logWriter.writeText(outputLogContent);
+  const logHandle = await logWriter.writeStream(
+    outputLogStream(stdout, stderr),
+  );
 
   if (exitCode !== 0 && !args.ignoreExitCode) {
     // the handles ride on the error; the execution service turns them into data
@@ -411,6 +404,55 @@ async function executeCommand(
   }
 
   return { dataHandles: [resultHandle, logHandle] };
+}
+
+/** UTF-16 units encoded at a time, so the log never holds a second whole copy of the output */
+export const OUTPUT_LOG_SLICE_UNITS = 1024 * 1024;
+
+/**
+ * the bytes of `[stdout]\n<stdout>\n[stderr]\n<stderr>`, an empty stream
+ * leaving its section out, one slice at a time
+ */
+export function outputLogStream(
+  stdout: string,
+  stderr: string,
+  sliceUnits: number = OUTPUT_LOG_SLICE_UNITS,
+): ReadableStream<Uint8Array> {
+  const sections: string[] = [];
+  if (stdout) sections.push("[stdout]\n", stdout);
+  if (stderr) {
+    sections.push(sections.length > 0 ? "\n[stderr]\n" : "[stderr]\n", stderr);
+  }
+  // two units, so a slice ending on a high surrogate still moves forward
+  const units = Math.max(2, sliceUnits);
+  const encoder = new TextEncoder();
+  let section = 0;
+  let offset = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      while (section < sections.length) {
+        const text = sections[section];
+        if (offset >= text.length) {
+          section++;
+          offset = 0;
+          continue;
+        }
+        let end = Math.min(text.length, offset + units);
+        // a pair split across slices would encode as two U+FFFD
+        if (end < text.length && isHighSurrogate(text.charCodeAt(end - 1))) {
+          end--;
+        }
+        controller.enqueue(encoder.encode(text.slice(offset, end)));
+        offset = end;
+        return;
+      }
+      controller.close();
+    },
+  });
+}
+
+function isHighSurrogate(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff;
 }
 
 export const shellModel: ModelDefinition = defineModel({

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -28,6 +29,7 @@ import { join } from "@std/path";
 import { createExtensionCelEnvironment } from "../../../../infrastructure/cel/cel_evaluator.ts";
 import { createDefinitionId } from "../../../definitions/definition.ts";
 import {
+  outputLogStream,
   placeShellDataSplices,
   refuseShellSecretDestinations,
   SHELL_DATA_PLACEMENT_REFUSED,
@@ -178,13 +180,13 @@ function createMockWriters(): {
       writeLine(_line: string): Promise<void> {
         return Promise.resolve();
       },
-      writeStream(
-        _stream: ReadableStream<Uint8Array>,
+      async writeStream(
+        stream: ReadableStream<Uint8Array>,
       ): Promise<DataHandle> {
-        const content = new Uint8Array();
+        const content = await new Response(stream).bytes();
         const handle = buildHandle(content);
         results.push({ handle, content });
-        return Promise.resolve(handle);
+        return handle;
       },
       getFilePath(): Promise<string> {
         return Promise.resolve("/tmp/mock");
@@ -2073,4 +2075,72 @@ Deno.test("shellModel: placed data reaches this host's shell as literal text and
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
   assertEquals((attrs?.stdout as string).trim(), `hello ${data}`);
+});
+
+/** the log as writeText stored it before the log was streamed */
+function joinedOutputLog(stdout: string, stderr: string): Uint8Array {
+  const parts: string[] = [];
+  if (stdout) parts.push(`[stdout]\n${stdout}`);
+  if (stderr) parts.push(`[stderr]\n${stderr}`);
+  return new TextEncoder().encode(parts.join("\n"));
+}
+
+async function streamedOutputLog(
+  stdout: string,
+  stderr: string,
+  sliceUnits?: number,
+): Promise<{ bytes: Uint8Array; chunks: number }> {
+  let chunks = 0;
+  const counted = outputLogStream(stdout, stderr, sliceUnits).pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        chunks++;
+        controller.enqueue(chunk);
+      },
+    }),
+  );
+  return { bytes: await new Response(counted).bytes(), chunks };
+}
+
+Deno.test("outputLogStream: stores the bytes the joined log did, with an empty stream's section left out", async () => {
+  const cases: [string, string][] = [
+    ["out line\nmore\n", "err line\n"],
+    ["", "err only\n"],
+    ["out only\n", ""],
+    ["", ""],
+    ["no newline", "also none"],
+  ];
+  for (const [stdout, stderr] of cases) {
+    assertEquals(
+      (await streamedOutputLog(stdout, stderr)).bytes,
+      joinedOutputLog(stdout, stderr),
+      JSON.stringify({ stdout, stderr }),
+    );
+  }
+});
+
+Deno.test("outputLogStream: multi-byte text and surrogate pairs cut across slice boundaries keep their bytes", async () => {
+  const stdout = "a\u00e9\u4e2d\ud83d\ude00b\ud83d\udca9\ud83d\ude00\u00e9"
+    .repeat(7);
+  const stderr = "\ud83d\ude00\u4e2d\nx\ud83d\udca9".repeat(5);
+  for (const sliceUnits of [1, 2, 3, 4, 5, 7, 11]) {
+    const { bytes, chunks } = await streamedOutputLog(
+      stdout,
+      stderr,
+      sliceUnits,
+    );
+    assertEquals(bytes, joinedOutputLog(stdout, stderr), `${sliceUnits}`);
+    assert(chunks > 2, `${sliceUnits} units went in ${chunks} slices`);
+  }
+});
+
+Deno.test("outputLogStream: a lone surrogate encodes as the joined log encoded it", async () => {
+  const stdout = "x\ud83dy\ude00z\ud83d";
+  const stderr = "\ude00\ud83d";
+  for (const sliceUnits of [2, 3]) {
+    assertEquals(
+      (await streamedOutputLog(stdout, stderr, sliceUnits)).bytes,
+      joinedOutputLog(stdout, stderr),
+    );
+  }
 });
