@@ -31,22 +31,31 @@ import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 function renderAcceptLog(data: DatastoreQuarantineAcceptData): void {
   const lines = [
-    `${bold(cyan("Accepted:"))} ${bold(data.txnId)}${
+    `${bold(cyan("Accepted:"))} ${bold(escapeControlCharacters(data.txnId))}${
       data.duplicate ? ` ${dim("(already accepted)")}` : ""
     }`,
-    `  Partition: ${data.partition}`,
-    `  Author:    ${data.author} ${dim("(it landed as them)")}`,
-    `  Accepted:  ${data.acceptedBy} at ${data.acceptedAt}`,
+    `  Partition: ${escapeControlCharacters(data.partition)}`,
+    `  Author:    ${escapeControlCharacters(data.author)} ${
+      dim("(it landed as them)")
+    }`,
+    `  Accepted:  ${escapeControlCharacters(data.acceptedBy)} at ${
+      escapeControlCharacters(data.acceptedAt)
+    }`,
   ];
   if (data.seq !== undefined) lines.push(`  Seq:       ${data.seq}`);
   if (data.renumbered.length > 0) {
     lines.push("");
     lines.push(cyan("Renumbered after what landed meanwhile:"));
     for (const version of data.renumbered) {
-      lines.push(`  ${version.name} ${version.from} ${dim("→")} ${version.to}`);
+      lines.push(
+        `  ${escapeControlCharacters(version.name)} ${version.from} ${
+          dim("→")
+        } ${version.to}`,
+      );
     }
   }
   lines.push("");
@@ -99,12 +108,14 @@ export function createDatastoreQuarantineAcceptRenderer(
 
 function renderDiscardLog(data: DatastoreQuarantineDiscardData): void {
   writeOutput([
-    `${bold(cyan("Discarded:"))} ${bold(data.txnId)}${
+    `${bold(cyan("Discarded:"))} ${bold(escapeControlCharacters(data.txnId))}${
       data.duplicate ? ` ${dim("(already discarded)")}` : ""
     }`,
-    `  Partition: ${data.partition}`,
-    `  Author:    ${data.author}`,
-    `  Discarded: ${data.discardedBy} at ${data.discardedAt}`,
+    `  Partition: ${escapeControlCharacters(data.partition)}`,
+    `  Author:    ${escapeControlCharacters(data.author)}`,
+    `  Discarded: ${escapeControlCharacters(data.discardedBy)} at ${
+      escapeControlCharacters(data.discardedAt)
+    }`,
     "",
     `${bold(cyan("Result:"))} ${yellow("discarded")} ${
       dim("- it never lands; the author's next command keeps it as rejected")

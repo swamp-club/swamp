@@ -85,11 +85,14 @@ export class PipeWriter {
   private maxNameWidth: number;
 
   constructor(names: string[]) {
-    this.maxNameWidth = Math.max(...names.map((n) => n.length), 1);
+    this.maxNameWidth = Math.max(
+      maxOf(names.map((n) => shown(n).length)) ?? 0,
+      1,
+    );
   }
 
   updateWidth(names: string[]): void {
-    const newMax = Math.max(...names.map((n) => n.length), 1);
+    const newMax = Math.max(maxOf(names.map((n) => shown(n).length)) ?? 0, 1);
     if (newMax > this.maxNameWidth) {
       this.maxNameWidth = newMax;
     }
@@ -104,7 +107,7 @@ export class PipeWriter {
   }
 
   line(name: string, content: string): string {
-    const padded = name.padStart(this.maxNameWidth + 1);
+    const padded = shown(name).padStart(this.maxNameWidth + 1);
     return `${dim(padded)} ${dim(PIPE_CHAR)} ${content}`;
   }
 
@@ -168,9 +171,9 @@ export class PipeWriter {
     reason?: string,
     guardExpression?: string,
   ): string {
-    const extra = reason ? ` (${reason})` : "";
+    const extra = reason ? ` (${shown(reason)})` : "";
     const guard = guardExpression
-      ? ` ${dim(`· guard: ${guardExpression}`)}`
+      ? ` ${dim(`· guard: ${shown(guardExpression)}`)}`
       : "";
     return this.line(name, `${dim(`skipped${extra}`)}${guard}`);
   }
@@ -183,19 +186,19 @@ export class PipeWriter {
     collectionExpression?: string,
     guardResult?: unknown,
   ): string {
-    const extra = reason ? ` (${reason})` : "";
+    const extra = reason ? ` (${shown(reason)})` : "";
     const result = guardResult === undefined
       ? ""
       : ` \u2192 ${formatGuardResult(guardResult)}`;
     const guard = guardExpression
-      ? ` ${dim(`· guard: ${guardExpression}${result}`)}`
+      ? ` ${dim(`· guard: ${shown(guardExpression)}${result}`)}`
       : "";
     const collection = collectionExpression
-      ? ` ${dim(`· in: ${collectionExpression}`)}`
+      ? ` ${dim(`· in: ${shown(collectionExpression)}`)}`
       : "";
     return this.line(
       name,
-      `${dim(`skipped ${stepPath}${extra}`)}${guard}${collection}`,
+      `${dim(`skipped ${shown(stepPath)}${extra}`)}${guard}${collection}`,
     );
   }
 
@@ -208,15 +211,20 @@ export class PipeWriter {
   ): string {
     return this.line(
       name,
-      `step ${stepPath} ${dim("·")} ${model} ${dim("·")} ${method} ${
-        dim(`· start ${timestamp}`)
-      }`,
+      `step ${shown(stepPath)} ${dim("·")} ${shown(model)} ${dim("·")} ${
+        shown(method)
+      } ${dim(`· start ${timestamp}`)}`,
     );
   }
 
   waitingLine(name: string, prompt: string): string {
-    return this.line(name, `${yellow("waiting")} ${prompt}`);
+    return this.line(name, `${yellow("waiting")} ${shown(prompt)}`);
   }
+}
+
+// names, paths, reasons and expressions can come from a remote serve or an extension
+function shown(value: string): string {
+  return escapeControlCharacters(value);
 }
 
 export interface DataArtifact {

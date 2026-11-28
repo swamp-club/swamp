@@ -34,6 +34,7 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import { GIT_SHA, VERSION } from "../../infrastructure/runtime/build_info.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 export function getVersionData(): VersionData {
   return { version: VERSION };
@@ -67,7 +68,11 @@ export const versionCommand = withRemoteOptions(
         client: { version: VERSION, gitSha: GIT_SHA },
       }));
     } else {
-      console.log(`server: ${response.version} (${response.gitSha})`);
+      console.log(
+        `server: ${escapeControlCharacters(String(response.version))} (${
+          escapeControlCharacters(String(response.gitSha))
+        })`,
+      );
       console.log(`client: ${VERSION} (${GIT_SHA})`);
     }
     return;

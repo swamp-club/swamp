@@ -28,6 +28,7 @@ import type {
   GenesisPass,
 } from "../../domain/quest/genesis_pass.ts";
 import { bold, dim, green, stripAnsiCode, yellow } from "@std/fmt/colors";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 
 // the data shape is stable, so this body is the only thing that changes when
 // the design does
@@ -152,7 +153,23 @@ function renderDeeds(
   push();
 }
 
-function renderPassLog(pass: GenesisPass, full: boolean, ghost: boolean): void {
+// challenge and tier names come from swamp-club, escaped before any width math
+function escapedPass(pass: GenesisPass): GenesisPass {
+  return {
+    ...pass,
+    challenges: pass.challenges.map((c) => ({ ...c, name: esc(c.name) })),
+    nextTier: pass.nextTier
+      ? { ...pass.nextTier, name: esc(pass.nextTier.name) }
+      : pass.nextTier,
+  };
+}
+
+function renderPassLog(
+  rawPass: GenesisPass,
+  full: boolean,
+  ghost: boolean,
+): void {
+  const pass = escapedPass(rawPass);
   const lines: string[] = [];
   const push = (s = "") => lines.push(s);
 

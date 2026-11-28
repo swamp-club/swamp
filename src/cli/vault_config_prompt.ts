@@ -25,6 +25,7 @@ import {
 import type { OutputMode } from "../presentation/output/output.ts";
 import { readSecretFromTty } from "../infrastructure/io/stdin_reader.ts";
 import { promptLine } from "./prompt_helpers.ts";
+import { escapeControlCharacters } from "../domain/control_characters.ts";
 
 const encoder = new TextEncoder();
 
@@ -79,13 +80,15 @@ export async function promptForMissingConfigFields(
   const notAsked = missing.filter((f) => f.type !== "string");
   if (asked.length > 0) {
     await io.note(
-      `${vaultType} needs these config fields. Press Enter to leave one unset.`,
+      `${
+        shown(vaultType)
+      } needs these config fields. Press Enter to leave one unset.`,
     );
   }
   if (notAsked.length > 0) {
     await io.note(
       `Pass with --config: ${
-        notAsked.map((f) => `${f.name} (${f.type})`).join(", ")
+        notAsked.map((f) => `${shown(f.name)} (${shown(f.type)})`).join(", ")
       }.`,
     );
   }
@@ -94,10 +97,12 @@ export async function promptForMissingConfigFields(
   for (const field of asked) {
     const secret = isSecretLikeFieldName(field.name);
     const detail = [
-      ...(field.description ? [field.description] : []),
+      ...(field.description ? [shown(field.description)] : []),
       ...(secret ? ["input hidden"] : []),
     ].join("; ");
-    const label = detail ? `${field.name} (${detail}): ` : `${field.name}: `;
+    const label = detail
+      ? `${shown(field.name)} (${detail}): `
+      : `${shown(field.name)}: `;
     const answer = secret
       ? await io.promptSecret(label)
       : await io.prompt(label);
@@ -105,9 +110,16 @@ export async function promptForMissingConfigFields(
     answers[field.name] = answer;
     if (secret) {
       await io.note(
-        `Note: ${field.name} is saved as plain text in the vault's config file, which is tracked in git.`,
+        `Note: ${
+          shown(field.name)
+        } is saved as plain text in the vault's config file, which is tracked in git.`,
       );
     }
   }
   return answers;
+}
+
+// field names, types and descriptions come from an extension's registry config schema
+function shown(value: string): string {
+  return escapeControlCharacters(value);
 }

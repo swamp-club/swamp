@@ -24,6 +24,7 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { bold, cyan, dim } from "@std/fmt/colors";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 class LogTrustListRenderer implements Renderer<TrustListEvent> {
   handlers(): EventHandlers<TrustListEvent> {
@@ -38,7 +39,7 @@ class LogTrustListRenderer implements Renderer<TrustListEvent> {
         lines.push(bold("Explicit:"));
         if (e.data.explicit.length > 0) {
           for (const c of e.data.explicit) {
-            lines.push(`  ${c}`);
+            lines.push(`  ${escapeControlCharacters(c)}`);
           }
         } else {
           lines.push(`  ${dim("(none)")}`);
@@ -56,7 +57,7 @@ class LogTrustListRenderer implements Renderer<TrustListEvent> {
           lines.push(bold("Membership:"));
           if (e.data.membership.length > 0) {
             for (const c of e.data.membership) {
-              lines.push(`  ${c}`);
+              lines.push(`  ${escapeControlCharacters(c)}`);
             }
           } else {
             lines.push(`  ${dim("(none)")}`);
@@ -67,7 +68,7 @@ class LogTrustListRenderer implements Renderer<TrustListEvent> {
         lines.push(bold("Resolved (effective):"));
         if (e.data.resolved.length > 0) {
           for (const c of e.data.resolved) {
-            lines.push(`  ${c}`);
+            lines.push(`  ${escapeControlCharacters(c)}`);
           }
         } else {
           lines.push(`  ${dim("(none)")}`);

@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { OutputMode } from "./output.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 export interface AuditExportOutputData {
@@ -52,10 +56,14 @@ export function createAuditExportRenderer(outputMode: OutputMode) {
 
           if (data.outputPath) {
             writeOutput(
-              `Exported ${data.count} event(s) in ${data.format} format to ${data.outputPath}`,
+              `Exported ${
+                escapeControlCharacters(String(data.count))
+              } event(s) in ${escapeControlCharacters(data.format)} format to ${
+                escapeControlCharacters(data.outputPath)
+              }`,
             );
           } else {
-            writeOutput(data.data);
+            writeOutput(escapeControlCharactersInText(data.data));
           }
 
           if (data.truncated) {

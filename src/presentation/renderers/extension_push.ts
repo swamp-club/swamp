@@ -36,6 +36,7 @@ import {
   getSwampLogger,
 } from "../../infrastructure/logging/logger.ts";
 import { displayPath } from "../output/display_path.ts";
+import { escapeControlCharactersInText } from "../../domain/control_characters.ts";
 import { logTextBlock } from "./log_text_block.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
@@ -545,9 +546,12 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       this.logger.info("Registry checks:");
       for (const check of data.registryChecks) {
         const label = REGISTRY_CHECK_LABELS[check.name];
-        const line = `  ${label}: ${
-          check.status === "not-run" ? "not run" : check.status
-        } — ${check.message}`;
+        // the message carries whoami and registry text
+        const line = escapeLogTemplate(
+          `  ${label}: ${
+            check.status === "not-run" ? "not run" : check.status
+          } — ${escapeControlCharactersInText(check.message)}`,
+        );
         if (check.status === "failed") {
           this.logger.error(line);
         } else if (check.status === "not-run") {

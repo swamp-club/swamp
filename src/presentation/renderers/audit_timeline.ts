@@ -27,6 +27,7 @@ import {
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
 import type { AuditEntry } from "../../domain/audit/audit_entry.ts";
 import { auditEntryToData } from "../../domain/audit/audit_entry.ts";
@@ -78,20 +79,22 @@ function renderTimelineTable(
       ? cyan("swamp".padEnd(8))
       : yellow("direct".padEnd(8));
 
-    const summary = entry.summary.length > maxSummaryLen
-      ? entry.summary.substring(0, maxSummaryLen - 3) + "..."
-      : entry.summary;
+    const fullSummary = escapeControlCharacters(entry.summary);
+    const summary = fullSummary.length > maxSummaryLen
+      ? fullSummary.substring(0, maxSummaryLen - 3) + "..."
+      : fullSummary;
 
     writeOutput(`${dim(time.padEnd(12))} ${source} ${summary}`);
 
     if (entry.status === "error" && entry.error) {
       const exitCodeStr = entry.exitCode !== undefined
-        ? `exit ${entry.exitCode}`
+        ? `exit ${escapeControlCharacters(String(entry.exitCode))}`
         : "failed";
       const maxErrorLen = 50;
-      const errorMsg = entry.error.length > maxErrorLen
-        ? entry.error.substring(0, maxErrorLen - 3) + "..."
-        : entry.error;
+      const fullError = escapeControlCharacters(entry.error);
+      const errorMsg = fullError.length > maxErrorLen
+        ? fullError.substring(0, maxErrorLen - 3) + "..."
+        : fullError;
       const indent = " ".repeat(21);
       writeOutput(`${indent}${red(`ERROR (${exitCodeStr}): ${errorMsg}`)}`);
     }
@@ -119,10 +122,11 @@ class LogAuditTimelineRenderer implements Renderer<AuditTimelineEvent> {
             );
             break;
           case "tool_not_supported": {
-            const message = `Audit hooks are not available for ${data.tool}. ${
+            const tool = escapeControlCharacters(data.tool);
+            const message = `Audit hooks are not available for ${tool}. ${
               data.tool === "codex"
                 ? "Codex does not support per-command hooks."
-                : `${data.tool} does not support audit hooks.`
+                : `${tool} does not support audit hooks.`
             } Audit data will not be collected for this tool.`;
             logger.info(message);
             break;

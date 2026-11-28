@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 /**
  * undefined for empty markdown unless showEmpty: an empty report means not
@@ -31,7 +32,7 @@ export function formatReportFrame(
   options: { showEmpty?: boolean } = {},
 ): string | undefined {
   if (!options.showEmpty && markdown.trim() === "") return undefined;
-  const headerPrefix = `── Report: ${reportName} `;
+  const headerPrefix = `── Report: ${escapeControlCharacters(reportName)} `;
   const header = headerPrefix +
     "─".repeat(Math.max(0, columns - headerPrefix.length));
   const separator = "─".repeat(columns);

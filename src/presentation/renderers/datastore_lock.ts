@@ -29,9 +29,11 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { bold, dim, green, red } from "@std/fmt/colors";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 function renderLockStatusLog(data: DatastoreLockStatusData): void {
-  const scopeLabel = data.lockScope ? ` [${data.lockScope}]` : "";
+  const scope = data.lockScope ? escapeControlCharacters(data.lockScope) : "";
+  const scopeLabel = scope ? ` [${scope}]` : "";
 
   if (!data.held || !data.info) {
     writeOutput(
@@ -46,40 +48,49 @@ function renderLockStatusLog(data: DatastoreLockStatusData): void {
 
   const lines = [
     `${bold("Lock Status:")} ${red("locked")}${scopeLabel}`,
-    `  Holder:   ${info.holder}`,
+    `  Holder:   ${escapeControlCharacters(info.holder)}`,
     // A lock caught mid-write names no process or host to print.
     ...(info.holderUnknown ? [] : [
-      `  PID:      ${info.pid}`,
-      `  Hostname: ${info.hostname}`,
+      `  PID:      ${escapeControlCharacters(String(info.pid))}`,
+      `  Hostname: ${escapeControlCharacters(info.hostname)}`,
     ]),
-    `  Acquired: ${info.acquiredAt} ${dim(`(${ageSec}s ago)`)}`,
-    `  TTL:      ${info.ttlMs}ms`,
+    `  Acquired: ${escapeControlCharacters(info.acquiredAt)} ${
+      dim(`(${ageSec}s ago)`)
+    }`,
+    `  TTL:      ${escapeControlCharacters(String(info.ttlMs))}ms`,
     `  Backend:  ${data.datastoreType}`,
   ];
   if (info.fence !== undefined) {
-    lines.push(`  Fence:    ${info.fence}`);
+    lines.push(`  Fence:    ${escapeControlCharacters(String(info.fence))}`);
   }
   if (data.lockScope) {
-    lines.push(`  Scope:    ${data.lockScope}`);
+    lines.push(`  Scope:    ${scope}`);
   }
 
   writeOutput(lines.join("\n"));
 }
 
 function renderServeLeaseLog(data: ServeLeaseStatusData): void {
+  const principal = data.holder === undefined
+    ? ""
+    : escapeControlCharacters(data.holder.principal);
   const who = data.holder === undefined
     ? (data.heldBy === "caller" ? "another command of yours" : "another caller")
     : data.heldBy === "caller"
-    ? `${data.holder.principal} (you, in another command)`
-    : data.holder.principal;
+    ? `${principal} (you, in another command)`
+    : principal;
   const holder = data.holder?.explicit === true
     ? `${who}, under an explicit lease`
     : who;
   writeOutput(
     [
-      `${bold("Serve Lease:")} ${red("held")} [${data.lockKey}]`,
+      `${bold("Serve Lease:")} ${red("held")} [${
+        escapeControlCharacters(data.lockKey)
+      }]`,
       `  Holder:   ${holder}`,
-      `  Expires:  ${data.expiresAt} ${dim("(unless renewed)")}`,
+      `  Expires:  ${escapeControlCharacters(data.expiresAt)} ${
+        dim("(unless renewed)")
+      }`,
     ].join("\n"),
   );
 }
@@ -164,7 +175,9 @@ class LogDatastoreLockReleaseRenderer
         if (!data.released) {
           writeOutput(
             `${bold("Lock Release:")} ${
-              dim(data.reason ?? "nothing to release")
+              dim(
+                escapeControlCharacters(data.reason ?? "nothing to release"),
+              )
             }`,
           );
           return;
@@ -172,11 +185,17 @@ class LogDatastoreLockReleaseRenderer
 
         const lines = [bold("Lock Released")];
         if (data.leaseHolder !== undefined) {
-          lines.push(`  Lease held by: ${data.leaseHolder}`);
+          lines.push(
+            `  Lease held by: ${escapeControlCharacters(data.leaseHolder)}`,
+          );
         }
         if (data.previousHolder) {
           lines.push(
-            `  Previous holder: ${data.previousHolder.holder} (pid ${data.previousHolder.pid})`,
+            `  Previous holder: ${
+              escapeControlCharacters(data.previousHolder.holder)
+            } (pid ${
+              escapeControlCharacters(String(data.previousHolder.pid))
+            })`,
           );
         }
 

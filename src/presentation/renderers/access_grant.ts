@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -30,13 +31,15 @@ function formatSubject(
   displayNames?: Record<string, string>,
 ): string {
   if (subject.kind === "user" && displayNames?.[subject.name]) {
-    return `${subject.kind}:${displayNames[subject.name]}`;
+    return escapeControlCharacters(
+      `${subject.kind}:${displayNames[subject.name]}`,
+    );
   }
-  return `${subject.kind}:${subject.name}`;
+  return escapeControlCharacters(`${subject.kind}:${subject.name}`);
 }
 
 function formatResource(resource: Grant["resource"]): string {
-  return `${resource.kind}:${resource.pattern}`;
+  return escapeControlCharacters(`${resource.kind}:${resource.pattern}`);
 }
 
 class LogAccessGrantListRenderer implements AccessGrantListRenderer {
@@ -55,14 +58,19 @@ class LogAccessGrantListRenderer implements AccessGrantListRenderer {
     writeOutput(header);
 
     for (const grant of grants) {
-      const id = grant.id.padEnd(idDisplay);
+      const id = escapeControlCharacters(grant.id).padEnd(idDisplay);
       const subject = formatSubject(grant.subject, displayNames).padEnd(28);
-      const effect = grant.effect.padEnd(6);
-      const actions = grant.actions.join(",").padEnd(20);
+      const effect = escapeControlCharacters(grant.effect).padEnd(6);
+      const actions = escapeControlCharacters(grant.actions.join(",")).padEnd(
+        20,
+      );
       const resource = formatResource(grant.resource).padEnd(28);
-      const methods = (grant.methods?.join(",") ?? "*").padEnd(16);
-      const condition = (grant.condition ?? "").padEnd(20);
-      const source = grant.source;
+      const methods = escapeControlCharacters(grant.methods?.join(",") ?? "*")
+        .padEnd(16);
+      const condition = escapeControlCharacters(grant.condition ?? "").padEnd(
+        20,
+      );
+      const source = escapeControlCharacters(grant.source);
       writeOutput(
         `${id}  ${subject}  ${effect}  ${actions}  ${resource}  ${methods}  ${condition}  ${source}`,
       );

@@ -18,11 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AuditAlertsResponse } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
 
-function stateColor(state: string): string {
+function stateColor(rawState: string): string {
+  const state = escapeControlCharacters(rawState);
   switch (state) {
     case "armed":
       return green(state);
@@ -53,11 +55,17 @@ export function renderAuditAlerts(
   writeOutput("");
 
   for (const rule of data.rules) {
-    const desc = rule.description ? dim(` — ${rule.description}`) : "";
-    writeOutput(`  ${bold(rule.name)}${desc}`);
+    const desc = rule.description
+      ? dim(` — ${escapeControlCharacters(rule.description)}`)
+      : "";
+    writeOutput(`  ${bold(escapeControlCharacters(rule.name))}${desc}`);
     writeOutput(
-      `    State: ${stateColor(rule.state)}  Window: ${rule.windowCount}${
-        rule.lastFiredAt ? `  Last fired: ${dim(rule.lastFiredAt)}` : ""
+      `    State: ${stateColor(rule.state)}  Window: ${
+        escapeControlCharacters(String(rule.windowCount))
+      }${
+        rule.lastFiredAt
+          ? `  Last fired: ${dim(escapeControlCharacters(rule.lastFiredAt))}`
+          : ""
       }`,
     );
   }

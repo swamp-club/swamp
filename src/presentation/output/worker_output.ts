@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
+import {
+  escapeControlCharacters as esc,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
   PrunableWorker,
@@ -48,15 +52,16 @@ function humanStopReason(reason: string): string {
     case "signal":
       return "received shutdown signal";
     default:
-      return reason;
+      return esc(reason);
   }
 }
 
 function tableLines(
   headers: string[],
-  rows: string[][],
+  rawRows: string[][],
   colorCell?: (columnIndex: number, value: string) => string,
 ): string[] {
+  const rows = rawRows.map((row) => row.map((cell) => esc(String(cell))));
   const widths = headers.map((header, i) =>
     Math.max(header.length, ...rows.map((row) => row[i].length))
   );
@@ -120,20 +125,22 @@ export function renderWorkerTokenCreate(
     return;
   }
   const lines = [
-    `${bold(cyan("Token:"))} ${bold(data.name)}`,
-    `${bold(cyan("Expires:"))} ${data.expiresAt}`,
+    `${bold(cyan("Token:"))} ${bold(esc(data.name))}`,
+    `${bold(cyan("Expires:"))} ${esc(data.expiresAt)}`,
     ...(data.maxEnrollments !== 1
-      ? [`${bold(cyan("Max enrollments:"))} ${data.maxEnrollments}`]
+      ? [
+        `${bold(cyan("Max enrollments:"))} ${esc(String(data.maxEnrollments))}`,
+      ]
       : []),
     // an older serve sends no labels
     ...(Object.keys(data.labels ?? {}).length > 0
-      ? [`${bold(cyan("Labels:"))} ${formatTokenLabels(data.labels)}`]
+      ? [`${bold(cyan("Labels:"))} ${esc(formatTokenLabels(data.labels))}`]
       : []),
-    `${bold(cyan("Vault:"))} ${data.vaultRef.vaultName} ${
-      dim(`(key ${data.vaultRef.secretKey})`)
+    `${bold(cyan("Vault:"))} ${esc(data.vaultRef.vaultName)} ${
+      dim(`(key ${esc(data.vaultRef.secretKey)})`)
     }`,
     "",
-    `  ${bold(data.token)}`,
+    `  ${bold(esc(data.token))}`,
     "",
     yellow(
       "This token is shown once and will not be displayed again — store it now.",
@@ -200,11 +207,12 @@ export function renderWorkerTokenRevoke(
     console.log(JSON.stringify(data, null, 2));
     return;
   }
+  const name = esc(data.name);
   const lines = data.alreadyRevoked
-    ? [`Token ${bold(data.name)} was already revoked.`]
-    : [`${green(checkmark)} Token ${bold(data.name)} revoked.`];
+    ? [`Token ${bold(name)} was already revoked.`]
+    : [`${green(checkmark)} Token ${bold(name)} revoked.`];
   if (!data.alreadyRevoked && data.revokedAt) {
-    lines.push(`${bold(cyan("Revoked at:"))} ${data.revokedAt}`);
+    lines.push(`${bold(cyan("Revoked at:"))} ${esc(data.revokedAt)}`);
   }
   if (data.disconnectedWorkers === undefined) {
     // A local revoke cannot see the live pool; a running orchestrator
@@ -219,7 +227,7 @@ export function renderWorkerTokenRevoke(
   } else if (data.disconnectedWorkers.length > 0) {
     lines.push(
       `${bold(cyan("Disconnected workers:"))} ${
-        data.disconnectedWorkers.map((name) => bold(name)).join(", ")
+        data.disconnectedWorkers.map((worker) => bold(esc(worker))).join(", ")
       }`,
     );
   } else if (!data.alreadyRevoked) {
@@ -237,19 +245,22 @@ export function renderWorkerTokenRotate(
     console.log(JSON.stringify(data, null, 2));
     return;
   }
-  const oldUntil = data.predecessorExpiresAt ?? data.expiresAt;
+  const rawOldUntil = data.predecessorExpiresAt ?? data.expiresAt;
+  const oldUntil = esc(rawOldUntil);
   const lines = [
-    `${green(checkmark)} Token ${bold(data.name)} rotated.`,
-    `${bold(cyan("Expires:"))} ${data.expiresAt}`,
+    `${green(checkmark)} Token ${bold(esc(data.name))} rotated.`,
+    `${bold(cyan("Expires:"))} ${esc(data.expiresAt)}`,
   ];
   if (data.predecessorExpiresAt !== null) {
     lines.push(
-      `${bold(cyan("Old token valid until:"))} ${data.predecessorExpiresAt}`,
+      `${bold(cyan("Old token valid until:"))} ${
+        esc(data.predecessorExpiresAt)
+      }`,
     );
   }
   if (
     !data.delivered &&
-    Date.parse(oldUntil) - nowMs < ROTATION_HEADROOM_MS
+    Date.parse(rawOldUntil) - nowMs < ROTATION_HEADROOM_MS
   ) {
     // never suggest rotating again: a second rotation retires the old token
     lines.push(
@@ -273,8 +284,10 @@ export function renderWorkerTokenRotate(
   for (const worker of data.rotated) {
     lines.push(
       worker.persisted
-        ? `  ${green(checkmark)} ${bold(worker.worker)} rotated`
-        : `  ${yellow("!")} ${bold(worker.worker)} rotated in memory only ${
+        ? `  ${green(checkmark)} ${bold(esc(worker.worker))} rotated`
+        : `  ${yellow("!")} ${
+          bold(esc(worker.worker))
+        } rotated in memory only ${
           dim(
             "(no token file was written; after a restart it does not have the new token)",
           )
@@ -283,22 +296,26 @@ export function renderWorkerTokenRotate(
   }
   for (const worker of data.notRotated) {
     lines.push(
-      `  ${red("✗")} ${bold(worker.worker)} not rotated ${
-        dim(`(${worker.reason})`)
+      `  ${red("✗")} ${bold(esc(worker.worker))} not rotated ${
+        dim(`(${esc(worker.reason)})`)
       }`,
     );
   }
   if (data.unconnectedBindings !== null && data.unconnectedBindings > 0) {
     lines.push(
       dim(
-        `${data.unconnectedBindings} enrolled machine(s) not connected — they can enroll with the old token until ${oldUntil}.`,
+        `${
+          esc(String(data.unconnectedBindings))
+        } enrolled machine(s) not connected — they can enroll with the old token until ${oldUntil}.`,
       ),
     );
   }
   if (data.retiredBindings !== null && data.retiredBindings > 0) {
     lines.push(
       yellow(
-        `${data.retiredBindings} enrolled machine(s) not connected still hold a token an earlier rotation retired — they need the new token to enroll.`,
+        `${
+          esc(String(data.retiredBindings))
+        } enrolled machine(s) not connected still hold a token an earlier rotation retired — they need the new token to enroll.`,
       ),
     );
   }
@@ -307,7 +324,7 @@ export function renderWorkerTokenRotate(
     (data.unconnectedBindings ?? 0) > 0 || (data.retiredBindings ?? 0) > 0;
   lines.push(
     "",
-    `  ${bold(data.token)}`,
+    `  ${bold(esc(data.token))}`,
     "",
     yellow("The new token is shown once — store it now."),
   );
@@ -330,12 +347,12 @@ export function renderWorkerTokenReveal(
     console.log(JSON.stringify(data, null, 2));
     return;
   }
-  writeOutput(`${bold(cyan("Token:"))} ${bold(data.name)}`);
-  writeOutput(`${bold(cyan("Expires:"))} ${data.expiresAt}`);
+  writeOutput(`${bold(cyan("Token:"))} ${bold(esc(data.name))}`);
+  writeOutput(`${bold(cyan("Expires:"))} ${esc(data.expiresAt)}`);
   if (data.expired) {
     writeOutput(yellow("Warning: this token has expired."));
   }
-  console.log(`\n  ${bold(data.token)}\n`);
+  console.log(`\n  ${bold(esc(data.token))}\n`);
   writeOutput(
     yellow("Store this token securely — do not share it in logs or messages."),
   );
@@ -361,7 +378,7 @@ export function renderWorkerList(
         [
           "No connected workers found.",
           dim(
-            `${data.filteredDisconnectedCount} disconnected ${
+            `${esc(String(data.filteredDisconnectedCount))} disconnected ${
               data.filteredDisconnectedCount === 1 ? "worker" : "workers"
             } hidden — use 'swamp worker list --all' to show all.`,
           ),
@@ -399,7 +416,7 @@ export function renderWorkerList(
   if (data.filteredDisconnectedCount) {
     writeOutput(
       dim(
-        `${data.filteredDisconnectedCount} disconnected ${
+        `${esc(String(data.filteredDisconnectedCount))} disconnected ${
           data.filteredDisconnectedCount === 1 ? "worker" : "workers"
         } hidden — use 'swamp worker list --all' to show all.`,
       ),
@@ -467,16 +484,20 @@ export function renderWorkerStatus(
   switch (event.kind) {
     case "connecting":
       writeOutput(
-        dim(`Connecting to ${event.url} (attempt ${event.attempt})...`),
+        dim(
+          `Connecting to ${esc(event.url)} (attempt ${
+            esc(String(event.attempt))
+          })...`,
+        ),
       );
       break;
     case "enrolled":
       writeOutput(
-        `${green(checkmark)} Enrolled as ${bold(cyan(event.workerId))}`,
+        `${green(checkmark)} Enrolled as ${bold(cyan(esc(event.workerId)))}`,
       );
       break;
     case "disconnected":
-      writeOutput(yellow(`Disconnected: ${event.reason}`));
+      writeOutput(yellow(`Disconnected: ${esc(event.reason)}`));
       break;
     case "retrying":
       writeOutput(dim(`Reconnecting in ${Math.round(event.delayMs / 1000)}s`));
@@ -498,31 +519,33 @@ export function renderWorkerStatus(
       break;
     case "dispatch_started": {
       const where = event.workflowName
-        ? ` (${event.workflowName}${
-          event.stepName ? ` › ${event.stepName}` : ""
+        ? ` (${esc(event.workflowName)}${
+          event.stepName ? ` › ${esc(event.stepName)}` : ""
         })`
         : "";
       writeOutput(
-        `${cyan("▶")} Dispatch ${bold(event.dispatchId.slice(0, 8))}: ${
-          bold(`${event.modelType}.${event.methodName}`)
+        `${cyan("▶")} Dispatch ${bold(esc(event.dispatchId).slice(0, 8))}: ${
+          bold(esc(`${event.modelType}.${event.methodName}`))
         }${where}`,
       );
       break;
     }
     case "dispatch_finished": {
       const took = `${Math.round(event.durationMs)}ms`;
+      const dispatchId = bold(esc(event.dispatchId).slice(0, 8));
+      const method = esc(`${event.modelType}.${event.methodName}`);
       if (event.status === "success") {
         writeOutput(
-          `${green(checkmark)} Dispatch ${
-            bold(event.dispatchId.slice(0, 8))
-          }: ${event.modelType}.${event.methodName} succeeded in ${took}`,
+          `${
+            green(checkmark)
+          } Dispatch ${dispatchId}: ${method} succeeded in ${took}`,
         );
       } else {
         writeOutput(
-          `${red("✗")} Dispatch ${
-            bold(event.dispatchId.slice(0, 8))
-          }: ${event.modelType}.${event.methodName} failed in ${took}${
-            event.error ? ` — ${event.error}` : ""
+          `${red("✗")} Dispatch ${dispatchId}: ${method} failed in ${took}${
+            event.error
+              ? ` — ${escapeControlCharactersInText(event.error)}`
+              : ""
           }`,
         );
       }
@@ -569,7 +592,9 @@ export function renderWorkerVerify(
   writeOutput(lines.join("\n"));
   writeOutput("");
   if (data.passed === data.total) {
-    writeOutput(green(`All ${data.total} worker(s) passed verification.`));
+    writeOutput(
+      green(`All ${esc(String(data.total))} worker(s) passed verification.`),
+    );
   } else {
     const failCount = data.workers.filter((w) => w.status === "fail").length;
     const errorCount = data.workers.filter((w) => w.status === "error").length;
@@ -578,9 +603,9 @@ export function renderWorkerVerify(
     if (errorCount > 0) parts.push(`${errorCount} unreachable`);
     writeOutput(
       red(
-        `${
-          parts.join(", ")
-        } of ${data.total} worker(s) did not pass verification.`,
+        `${parts.join(", ")} of ${
+          esc(String(data.total))
+        } worker(s) did not pass verification.`,
       ),
     );
   }
@@ -603,9 +628,9 @@ export function renderWorkerPrunePreview(
   writeOutput(`${label} ${bold(String(workers.length))} worker(s):\n`);
   for (const w of workers) {
     writeOutput(
-      `  ${dim("•")} ${bold(w.name)} (token: ${w.tokenName}, disconnected: ${
-        w.disconnectedAt ?? "unknown"
-      })`,
+      `  ${dim("•")} ${bold(esc(w.name))} (token: ${
+        esc(w.tokenName)
+      }, disconnected: ${esc(w.disconnectedAt ?? "unknown")})`,
     );
   }
   writeOutput("");
@@ -631,12 +656,14 @@ export function renderWorkerPruneResult(
     parts.push(
       `${green(checkmark)} Cleaned ${
         bold(String(result.bindingsPruned))
-      } binding(s) from ${result.tokensCleaned} token(s)`,
+      } binding(s) from ${esc(String(result.tokensCleaned))} token(s)`,
     );
   }
   if (result.workersFailed > 0) {
     parts.push(
-      `${yellow("!")} ${result.workersFailed} worker(s) failed to delete`,
+      `${yellow("!")} ${
+        esc(String(result.workersFailed))
+      } worker(s) failed to delete`,
     );
   }
   if (parts.length === 0) {

@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import {
   createTlsHttpClient,
   getEnvCaCerts,
@@ -176,18 +177,21 @@ async function handleOAuthFlow(
             verificationUriComplete: event.verificationUriComplete,
           }));
         } else {
+          const userCode = escapeControlCharacters(event.userCode);
           writeOutput(
-            `\nYour verification code: ${bold(event.userCode)}\n`,
+            `\nYour verification code: ${bold(userCode)}\n`,
           );
           if (event.verificationUriComplete) {
             writeOutput(
-              `Open: ${bold(event.verificationUriComplete)}`,
+              `Open: ${
+                bold(escapeControlCharacters(event.verificationUriComplete))
+              }`,
             );
           } else {
             writeOutput(
-              `Visit ${bold(event.verificationUri)} and enter code ${
-                bold(event.userCode)
-              }`,
+              `Visit ${
+                bold(escapeControlCharacters(event.verificationUri))
+              } and enter code ${bold(userCode)}`,
             );
           }
         }
@@ -204,7 +208,7 @@ async function handleOAuthFlow(
             message: event.message,
           }));
         } else {
-          writeOutput(yellow(event.message));
+          writeOutput(yellow(escapeControlCharacters(event.message)));
         }
         break;
       case "polling":
@@ -226,7 +230,11 @@ async function handleOAuthFlow(
         } else {
           writeOutput(
             `\n${green("✓")} Authenticated as ${
-              bold(event.data.displayName || event.data.principalEmail)
+              bold(
+                escapeControlCharacters(
+                  event.data.displayName || event.data.principalEmail,
+                ),
+              )
             }`,
           );
         }

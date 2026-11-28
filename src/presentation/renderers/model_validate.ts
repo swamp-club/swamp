@@ -47,6 +47,10 @@ import {
   DEFAULT_COMMAND_SURFACE,
   surfaceNounPlural,
 } from "../command_surface.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 const checkmark = "\u2713";
 const cross = "\u2717";
@@ -59,15 +63,17 @@ function formatValidationLines(
   const lines: string[] = [];
   for (const v of validations) {
     if (v.passed) {
-      lines.push(`  ${green(checkmark)} ${v.name}`);
+      lines.push(`  ${green(checkmark)} ${escapeControlCharacters(v.name)}`);
     } else {
-      lines.push(`  ${red(cross)} ${v.name}`);
+      lines.push(`  ${red(cross)} ${escapeControlCharacters(v.name)}`);
       if (v.expressionErrors?.length) {
         for (const line of formatExpressionErrorLines(v.expressionErrors)) {
           lines.push(line);
         }
       } else if (v.error) {
-        lines.push(`    ${red(arrow)} ${v.error}`);
+        lines.push(
+          `    ${red(arrow)} ${escapeControlCharactersInText(v.error)}`,
+        );
       }
     }
   }
@@ -81,15 +87,21 @@ function formatExpressionErrorLines(
 ): string[] {
   const lines: string[] = [];
   for (const err of errors) {
-    lines.push(`    ${red(arrow)} ${err.expression}`);
-    lines.push(`      ${err.error}`);
-    if (err.suggestion) lines.push(`      ${err.suggestion}`);
+    lines.push(`    ${red(arrow)} ${escapeControlCharacters(err.expression)}`);
+    lines.push(`      ${escapeControlCharactersInText(err.error)}`);
+    if (err.suggestion) {
+      lines.push(`      ${escapeControlCharactersInText(err.suggestion)}`);
+    }
     if (err.availableKeys?.length) {
-      lines.push(`      Available: ${formatAvailableKeys(err.availableKeys)}`);
+      lines.push(
+        `      Available: ${
+          escapeControlCharacters(formatAvailableKeys(err.availableKeys))
+        }`,
+      );
     }
   }
   for (const remedy of distinctRemedies(errors)) {
-    lines.push(`    ${remedy}`);
+    lines.push(`    ${escapeControlCharactersInText(remedy)}`);
   }
   return lines;
 }
@@ -100,27 +112,45 @@ function formatWarningLines(
 ): string[] {
   const lines: string[] = [];
   for (const w of warnings) {
-    lines.push(`  ${yellow(warning)} ${yellow(w.name)}`);
+    lines.push(
+      `  ${yellow(warning)} ${yellow(escapeControlCharacters(w.name))}`,
+    );
     if (w.envVars) {
       for (const detail of w.envVars) {
-        lines.push(`    ${detail.path} uses ${bold(detail.envVar)}`);
+        lines.push(
+          `    ${escapeControlCharacters(detail.path)} uses ${
+            bold(escapeControlCharacters(detail.envVar))
+          }`,
+        );
       }
     }
     if (w.templates) {
       for (const detail of w.templates) {
-        lines.push(`    ${detail.path} passes ${bold(detail.text)}`);
+        lines.push(
+          `    ${escapeControlCharacters(detail.path)} passes ${
+            bold(escapeControlCharacters(detail.text))
+          }`,
+        );
       }
     }
     if (w.secretReferences) {
       for (const detail of w.secretReferences) {
         lines.push(
-          `    ${detail.location} reads ${
-            bold(`${detail.vaultName}/${detail.key}`)
-          }: ${detail.reason}`,
+          `    ${escapeControlCharacters(detail.location)} reads ${
+            bold(
+              `${escapeControlCharacters(detail.vaultName)}/${
+                escapeControlCharacters(detail.key)
+              }`,
+            )
+          }: ${escapeControlCharacters(detail.reason)}`,
         );
       }
     }
-    lines.push(`    ${yellow(arrow)} ${messageFor(w, surface)}`);
+    lines.push(
+      `    ${yellow(arrow)} ${
+        escapeControlCharactersInText(messageFor(w, surface))
+      }`,
+    );
   }
   return lines;
 }
@@ -165,9 +195,9 @@ class LogModelValidateRenderer implements ModelValidateRenderer {
     this._passed = data.passed;
     const lines: string[] = [];
     lines.push(
-      `${bold(cyan("Validating:"))} ${bold(data.modelName)} ${
-        dim(`(${data.type})`)
-      }`,
+      `${bold(cyan("Validating:"))} ${
+        bold(escapeControlCharacters(data.modelName))
+      } ${dim(`(${escapeControlCharacters(data.type)})`)}`,
     );
     lines.push(...formatValidationLines(data.validations));
     if (data.warnings.length > 0) {
@@ -197,7 +227,9 @@ class LogModelValidateRenderer implements ModelValidateRenderer {
     for (const model of data.models) {
       lines.push("");
       lines.push(
-        `${bold(cyan(model.modelName))} ${dim(`(${model.type})`)}`,
+        `${bold(cyan(escapeControlCharacters(model.modelName)))} ${
+          dim(`(${escapeControlCharacters(model.type)})`)
+        }`,
       );
       lines.push(...formatValidationLines(model.validations));
       if (model.warnings.length > 0) {

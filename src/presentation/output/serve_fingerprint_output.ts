@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim } from "@std/fmt/colors";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "./output.ts";
 import type { ServeFingerprintData } from "../../libswamp/serve/fingerprint.ts";
@@ -32,7 +33,9 @@ function counts(record: Record<string, number>): string {
   );
   return entries.length === 0
     ? dim("none")
-    : entries.map(([name, n]) => `${name} ${dim(`(${n})`)}`).join(", ");
+    : entries.map(([name, n]) =>
+      `${escapeControlCharacters(name)} ${dim(`(${n})`)}`
+    ).join(", ");
 }
 
 function list(values: readonly string[]): string {

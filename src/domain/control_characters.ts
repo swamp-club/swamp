@@ -52,6 +52,18 @@ export function escapeControlCharactersInMessage(value: string): string {
   );
 }
 
+/**
+ * remote text printed across lines keeps newline and tab, as the LogTape
+ * formatter does; CRLF and lone CR become newline so form-typed text does not
+ * end every line with a visible \x0d
+ */
+export function escapeControlCharactersInText(value: string): string {
+  return mapControlCharacters(
+    value.replace(/\r\n?/g, "\n"),
+    (c) => c === "\n" || c === "\t" ? c : escapeControlCharacter(c),
+  );
+}
+
 function escapeControlCharacter(character: string): string {
   return `\\x${character.charCodeAt(0).toString(16).padStart(2, "0")}`;
 }

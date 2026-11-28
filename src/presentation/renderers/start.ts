@@ -28,6 +28,10 @@ import type {
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 export interface PageReach {
   /** served beyond loopback, so the page warns on every run */
@@ -66,7 +70,9 @@ class LogStartRenderer implements StartRenderer {
         if (state.kind === "signed_in") {
           writeOutput(
             `${green("✓")} Signed in to Swamp Club${
-              state.username ? ` as ${bold(state.username)}` : ""
+              state.username
+                ? ` as ${bold(escapeControlCharacters(state.username))}`
+                : ""
             }`,
           );
         } else if (state.kind === "not_signed_in") {
@@ -75,7 +81,9 @@ class LogStartRenderer implements StartRenderer {
           );
         } else {
           writeOutput(`${yellow("!")} Swamp couldn't verify your account`);
-          writeOutput(dim(indentLines(state.reason)));
+          writeOutput(
+            dim(indentLines(escapeControlCharactersInText(state.reason))),
+          );
         }
       },
       workspace_ready: (e) => {
@@ -148,13 +156,17 @@ class LogStartRenderer implements StartRenderer {
     if (data.signedIn === "signed_in") {
       writeOutput(
         `${green("✓")} Signed in to Swamp Club${
-          data.username ? ` as ${bold(data.username)}` : ""
+          data.username
+            ? ` as ${bold(escapeControlCharacters(data.username))}`
+            : ""
         }`,
       );
     } else if (data.signedIn === "blocked") {
       writeOutput(`${yellow("!")} Swamp couldn't verify your account`);
       if (data.blockedReason) {
-        writeOutput(dim(indentLines(data.blockedReason)));
+        writeOutput(
+          dim(indentLines(escapeControlCharactersInText(data.blockedReason))),
+        );
       }
     } else if (data.signedIn === "unknown") {
       writeOutput(

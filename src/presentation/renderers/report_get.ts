@@ -29,6 +29,7 @@ import {
   type WidthOptions,
 } from "../markdown_renderer.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 type ReportOutputMode = OutputMode | "markdown";
 
@@ -51,13 +52,21 @@ class LogReportGetRenderer implements Renderer<ReportGetEvent> {
         const cols = this.effectiveWidthOptions.maxWidth!;
         const separator = "\u2500".repeat(cols);
         const source = r.workflowName
-          ? `Workflow: ${r.workflowName}`
-          : `Behavior: ${r.modelName} (${r.modelType})`;
+          ? `Workflow: ${escapeControlCharacters(r.workflowName)}`
+          : `Behavior: ${escapeControlCharacters(r.modelName)} (${
+            escapeControlCharacters(r.modelType)
+          })`;
         const varySuffixLabel = r.varySuffix
-          ? `  |  Variant: ${r.varySuffix}`
+          ? `  |  Variant: ${escapeControlCharacters(r.varySuffix)}`
           : "";
         writeOutput(
-          `${separator}\n  ${r.reportName}  |  ${source}  |  Scope: ${r.reportScope}${varySuffixLabel}  |  v${r.version}  |  ${r.createdAt}\n${separator}`,
+          `${separator}\n  ${
+            escapeControlCharacters(r.reportName)
+          }  |  ${source}  |  Scope: ${
+            escapeControlCharacters(r.reportScope)
+          }${varySuffixLabel}  |  v${
+            escapeControlCharacters(String(r.version))
+          }  |  ${escapeControlCharacters(r.createdAt)}\n${separator}`,
         );
         writeOutput(
           renderMarkdownToTerminal(r.markdown, this.effectiveWidthOptions),
@@ -93,13 +102,21 @@ class MarkdownReportGetRenderer implements Renderer<ReportGetEvent> {
       completed: (e) => {
         const r = e.data;
         const source = r.workflowName
-          ? `Workflow: ${r.workflowName}`
-          : `Behavior: ${r.modelName} (${r.modelType})`;
+          ? `Workflow: ${escapeControlCharacters(r.workflowName)}`
+          : `Behavior: ${escapeControlCharacters(r.modelName)} (${
+            escapeControlCharacters(r.modelType)
+          })`;
         const varySuffixLabel = r.varySuffix
-          ? `  |  Variant: ${r.varySuffix}`
+          ? `  |  Variant: ${escapeControlCharacters(r.varySuffix)}`
           : "";
         writeOutput(
-          `## ${r.reportName}\n\n${source}  |  Scope: ${r.reportScope}${varySuffixLabel}  |  v${r.version}  |  ${r.createdAt}\n`,
+          `## ${
+            escapeControlCharacters(r.reportName)
+          }\n\n${source}  |  Scope: ${
+            escapeControlCharacters(r.reportScope)
+          }${varySuffixLabel}  |  v${
+            escapeControlCharacters(String(r.version))
+          }  |  ${escapeControlCharacters(r.createdAt)}\n`,
         );
         writeOutput(renderMarkdownPlain(r.markdown, this.widthOptions));
       },

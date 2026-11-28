@@ -28,6 +28,10 @@ import {
   STATUS_COLORS,
   writeContentLine,
 } from "../output/console_writer.ts";
+import {
+  escapeControlCharacters as esc,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 const MAX_DESCRIPTION_WIDTH = 80;
 
@@ -59,7 +63,7 @@ export function renderAutoResolveSearching(
       gutterLine(
         "Resolving",
         STATUS_COLORS.info,
-        `${type} not found locally, searching registry...`,
+        `${esc(type)} not found locally, searching registry...`,
       ),
     );
   }
@@ -81,12 +85,19 @@ export function renderAutoResolveInstalling(
       }),
     );
   } else {
-    const summary = summarizeDescription(description);
+    // escaped before the cut; the outer pass catches the tabs the inner keeps
+    const summary = esc(
+      summarizeDescription(
+        description === undefined
+          ? undefined
+          : escapeControlCharactersInText(description),
+      ),
+    );
     writeOutput(
       gutterLine(
         "Installing",
         STATUS_COLORS.info,
-        `${extension}@${version}${summary ? ` (${summary})` : ""}`,
+        `${esc(extension)}@${esc(version)}${summary ? ` (${summary})` : ""}`,
       ),
     );
   }
@@ -113,7 +124,9 @@ export function renderAutoResolveInstalled(
       gutterLine(
         "Installed",
         STATUS_COLORS.success,
-        `${extension}@${version} (${modelsRegistered} behaviors registered)`,
+        `${esc(extension)}@${
+          esc(version)
+        } (${modelsRegistered} behaviors registered)`,
       ),
     );
   }
@@ -137,7 +150,9 @@ export function renderAutoResolveNotFound(
       gutterLine(
         "Error",
         STATUS_COLORS.error,
-        `auto-resolution failed for type ${type}: no extension publishes this type`,
+        `auto-resolution failed for type ${
+          esc(type)
+        }: no extension publishes this type`,
       ),
     );
     writeContentLine(
@@ -166,14 +181,16 @@ export function renderAutoResolveAlreadyInstalled(
       gutterLine(
         "Error",
         STATUS_COLORS.error,
-        `${extension} already installed at ${path} but failed to load`,
+        `${esc(extension)} already installed at ${
+          esc(path)
+        } but failed to load`,
       ),
     );
     writeContentLine(
       "Local edits may be preventing it from registering — inspect the source and fix errors.",
     );
     writeContentLine(
-      `To reset: swamp extension pull "${extension}" --force`,
+      `To reset: swamp extension pull "${esc(extension)}" --force`,
     );
   }
 }
@@ -198,19 +215,22 @@ export function renderAutoResolveInstalledWithoutType(
       }),
     );
   } else {
+    const name = esc(extension);
     const installed = installedVersion
-      ? `${extension}@${installedVersion}`
-      : extension;
+      ? `${name}@${esc(installedVersion)}`
+      : name;
     writeOutput(
       gutterLine(
         "Error",
         STATUS_COLORS.error,
-        `${installed} is installed but does not provide ${type}`,
+        `${installed} is installed but does not provide ${esc(type)}`,
       ),
     );
     if (newerVersion) {
       writeContentLine(
-        `${extension}@${newerVersion} is available and may provide it. To upgrade: swamp extension update ${extension}`,
+        `${name}@${
+          esc(newerVersion)
+        } is available and may provide it. To upgrade: swamp extension update ${name}`,
       );
     } else {
       writeContentLine(
@@ -238,18 +258,21 @@ export function renderAutoResolveTruncated(
       }),
     );
   } else {
-    const list = missing.length > 5
-      ? `${missing.slice(0, 5).join(", ")}, ... and ${missing.length - 5} more`
-      : missing.join(", ");
+    const shown = missing.map(esc);
+    const list = shown.length > 5
+      ? `${shown.slice(0, 5).join(", ")}, ... and ${shown.length - 5} more`
+      : shown.join(", ");
     writeOutput(
       gutterLine(
         "Error",
         STATUS_COLORS.error,
-        `${extension} at ${path} is incomplete — missing ${missing.length} file(s): ${list}`,
+        `${esc(extension)} at ${
+          esc(path)
+        } is incomplete — missing ${missing.length} file(s): ${list}`,
       ),
     );
     writeContentLine(
-      `To re-fetch and repair: swamp extension pull ${extension} --force`,
+      `To re-fetch and repair: swamp extension pull ${esc(extension)} --force`,
     );
   }
 }
@@ -274,11 +297,13 @@ export function renderAutoResolveLegacyInstallation(
       gutterLine(
         "Error",
         STATUS_COLORS.error,
-        `${extension} has ${paths.length} legacy file(s) on disk`,
+        `${esc(extension)} has ${paths.length} legacy file(s) on disk`,
       ),
     );
     writeContentLine(
-      `Auto-resolution will not migrate them. To migrate explicitly: swamp extension pull ${extension}`,
+      `Auto-resolution will not migrate them. To migrate explicitly: swamp extension pull ${
+        esc(extension)
+      }`,
     );
   }
 }
@@ -303,11 +328,13 @@ export function renderAutoResolveCollectiveNotTrusted(
       gutterLine(
         "Warning",
         STATUS_COLORS.warn,
-        `${type} is from collective "${collective}", which is not trusted`,
+        `${esc(type)} is from collective "${
+          esc(collective)
+        }", which is not trusted`,
       ),
     );
     writeContentLine(
-      `To allow: swamp extension trust add "${collective}"`,
+      `To allow: swamp extension trust add "${esc(collective)}"`,
     );
   }
 }
@@ -333,13 +360,15 @@ export function renderAutoResolveLocalSourceFailed(
       gutterLine(
         "Error",
         STATUS_COLORS.error,
-        `${type} could not be loaded — a local source extension failed to index`,
+        `${
+          esc(type)
+        } could not be loaded — a local source extension failed to index`,
       ),
     );
-    writeContentLine(`File: ${failure.file}`);
+    writeContentLine(`File: ${esc(failure.file)}`);
     if (failure.error !== "") {
       for (const line of failure.error.trimEnd().split(/\r?\n/)) {
-        writeContentLine(line);
+        writeContentLine(esc(line));
       }
     }
     writeContentLine(
@@ -368,7 +397,7 @@ export function renderAutoResolveNetworkError(
       gutterLine(
         "Error",
         STATUS_COLORS.error,
-        `auto-resolution failed for type ${type}: ${error}`,
+        `auto-resolution failed for type ${esc(type)}: ${esc(error)}`,
       ),
     );
     writeContentLine(
@@ -418,7 +447,7 @@ export function renderAutoResolveInstallBusy(
       gutterLine(
         "Error",
         STATUS_COLORS.error,
-        `auto-resolution failed for type ${type}: ${error}`,
+        `auto-resolution failed for type ${esc(type)}: ${esc(error)}`,
       ),
     );
   }
@@ -442,11 +471,13 @@ export function renderAutoResolveNoStableVersion(
       gutterLine(
         "Warning",
         STATUS_COLORS.warn,
-        `${extension} has no stable version and cannot be auto-resolved`,
+        `${esc(extension)} has no stable version and cannot be auto-resolved`,
       ),
     );
     writeContentLine(
-      `Install manually: swamp extension pull ${extension} --channel <rc|beta>`,
+      `Install manually: swamp extension pull ${
+        esc(extension)
+      } --channel <rc|beta>`,
     );
   }
 }

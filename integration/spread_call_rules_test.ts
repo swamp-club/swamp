@@ -345,13 +345,6 @@ const PINNED: ReadonlyArray<
     ],
   },
   {
-    file: "src/presentation/output/console_writer.ts",
-    reason: "names or attribute keys of one run or record",
-    calls: [
-      "Math.max(...names.map((n) => n.length), 1)",
-    ],
-  },
-  {
     file: "src/presentation/output/serve_check_config_output.ts",
     reason: "admins and allowed users in the serve config",
     calls: [
@@ -367,25 +360,11 @@ const PINNED: ReadonlyArray<
     ],
   },
   {
-    file: "src/presentation/renderers/access_can_i.ts",
-    reason: "one decision per resource asked about",
-    calls: [
-      "Math.max(...result.decisions.map((d) => d.resource.length))",
-    ],
-  },
-  {
     file: "src/presentation/renderers/auth_login.ts",
     reason: "fixed set of login summary rows",
     calls: [
       "Math.max(...allRows.map((r) => r.label.length))",
       "Math.max(...allRows.map((r) => stripAnsi(r.value).length))",
-    ],
-  },
-  {
-    file: "src/presentation/renderers/collective_standing.ts",
-    reason: "collectives of one account",
-    calls: [
-      "Math.max(...entitlements.map((c) => c.slug.length))",
     ],
   },
   {

@@ -25,6 +25,10 @@ import {
   STALE_TTL_MS,
 } from "../../domain/models/active_run.ts";
 import type { OutputMode } from "./output.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 function formatDuration(ms: number): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
@@ -37,6 +41,8 @@ function tableLines(
   rows: string[][],
   colorCell?: (columnIndex: number, value: string) => string,
 ): string[] {
+  // escaped before measuring, so padding counts the characters printed
+  rows = rows.map((row) => row.map(escapeControlCharacters));
   const widths = headers.map((header, i) =>
     Math.max(header.length, maxOf(rows.map((row) => row[i].length)) ?? 0)
   );
@@ -258,8 +264,12 @@ export function writeDoctorRunsLog(
       ),
     );
     for (const run of unreadable.runs) {
-      lines.push(`  ${run.runId} ${dim(run.path)}`);
-      lines.push(`    ${red(run.reason)}`);
+      lines.push(
+        `  ${escapeControlCharacters(run.runId)} ${
+          dim(escapeControlCharacters(run.path))
+        }`,
+      );
+      lines.push(`    ${red(escapeControlCharactersInText(run.reason))}`);
     }
     if (fix) {
       if (unreadable.reaped > 0) {
@@ -305,7 +315,9 @@ export function writeDoctorRunsLog(
     if (lines.length > 0) lines.push("");
     lines.push(
       red(
-        `Could not check method runs for a gone owner: ${orphanedMethodError}`,
+        `Could not check method runs for a gone owner: ${
+          escapeControlCharactersInText(orphanedMethodError)
+        }`,
       ),
     );
   }
@@ -313,8 +325,8 @@ export function writeDoctorRunsLog(
   for (const [runId, diagnostics] of progressByRun ?? []) {
     lines.push("");
     lines.push(
-      `Progress for ${runId} (${
-        diagnostics.progressScope ?? "unknown scope"
+      `Progress for ${escapeControlCharacters(runId)} (${
+        escapeControlCharacters(diagnostics.progressScope ?? "unknown scope")
       }):`,
     );
     if (!diagnostics.progress?.length) {
@@ -324,19 +336,33 @@ export function writeDoctorRunsLog(
       lines.push(
         `  ${
           step.scope === "method"
-            ? `${step.model}/${step.method}`
+            ? `${escapeControlCharacters(String(step.model))}/${
+              escapeControlCharacters(String(step.method))
+            }`
             : step.scope === "run"
-            ? step.workflow
-            : `${step.workflow}/${step.job}/${step.step}`
-        }: ${step.phase} (${formatDuration(step.phaseElapsedMs)})`,
+            ? escapeControlCharacters(String(step.workflow))
+            : `${escapeControlCharacters(String(step.workflow))}/${
+              escapeControlCharacters(String(step.job))
+            }/${escapeControlCharacters(String(step.step))}`
+        }: ${escapeControlCharacters(String(step.phase))} (${
+          formatDuration(step.phaseElapsedMs)
+        })`,
       );
-      lines.push(`    Last progress: ${step.lastProgressAt}`);
-      if (step.worker) lines.push(`    Worker: ${step.worker}`);
-      if (step.traceId) lines.push(`    Trace: ${step.traceId}`);
+      lines.push(
+        `    Last progress: ${escapeControlCharacters(step.lastProgressAt)}`,
+      );
+      if (step.worker) {
+        lines.push(`    Worker: ${escapeControlCharacters(step.worker)}`);
+      }
+      if (step.traceId) {
+        lines.push(`    Trace: ${escapeControlCharacters(step.traceId)}`);
+      }
       if (step.phase === "waiting_for_lock") {
         lines.push(
-          `    Lock: ${step.resource ?? "unknown"}; holder run: ${
-            step.holderRunId ?? "unknown"
+          `    Lock: ${
+            escapeControlCharacters(step.resource ?? "unknown")
+          }; holder run: ${
+            escapeControlCharacters(step.holderRunId ?? "unknown")
           }`,
         );
       }
@@ -346,16 +372,28 @@ export function writeDoctorRunsLog(
     lines.push("", bold("Webhook admissions:"));
     for (const entry of webhookAdmissions) {
       lines.push(
-        `  ${entry.receiptId} (${entry.workflow}): ${entry.phase} (${
+        `  ${escapeControlCharacters(entry.receiptId)} (${
+          escapeControlCharacters(entry.workflow)
+        }): ${escapeControlCharacters(entry.phase)} (${
           formatDuration(entry.phaseElapsedMs)
         })`,
       );
-      if (entry.runId) lines.push(`    Run: ${entry.runId}`);
-      lines.push(`    Last progress: ${entry.lastProgressAt}`);
-      if (entry.traceId) lines.push(`    Receipt trace: ${entry.traceId}`);
+      if (entry.runId) {
+        lines.push(`    Run: ${escapeControlCharacters(entry.runId)}`);
+      }
+      lines.push(
+        `    Last progress: ${escapeControlCharacters(entry.lastProgressAt)}`,
+      );
+      if (entry.traceId) {
+        lines.push(
+          `    Receipt trace: ${escapeControlCharacters(entry.traceId)}`,
+        );
+      }
       if (entry.blockingRunIds.length) {
         lines.push(
-          `    Admission slots held by: ${entry.blockingRunIds.join(", ")}`,
+          `    Admission slots held by: ${
+            entry.blockingRunIds.map(escapeControlCharacters).join(", ")
+          }`,
         );
       }
       if (entry.unknownBlockers) {

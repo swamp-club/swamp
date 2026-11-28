@@ -19,6 +19,10 @@
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { maxOf } from "../../domain/array_extrema.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { DelegationEndData } from "../../libswamp/access/delegation_end.ts";
 import type {
@@ -27,7 +31,8 @@ import type {
 } from "../../libswamp/access/delegation_list.ts";
 import type { OutputMode } from "./output.ts";
 
-function stateText(state: string): string {
+function stateText(rawState: string): string {
+  const state = escapeControlCharacters(rawState);
   if (state === "issued" || state === "consented") return green(state);
   if (
     state === "awaiting_consent" || state === "reporting" ||
@@ -47,9 +52,13 @@ const HOLD_TEXT: Record<string, string> = {
 function holdLines(view: DelegationView): string[] {
   if (!view.hold) return [];
   return [
-    line("Suspended since", view.hold.since),
+    line("Suspended since", escapeControlCharacters(view.hold.since)),
     ...view.hold.causes.map((cause) =>
-      `  ${dim("because")} ${HOLD_TEXT[cause] ?? cause}`
+      `  ${dim("because")} ${
+        Object.hasOwn(HOLD_TEXT, cause)
+          ? HOLD_TEXT[cause]
+          : escapeControlCharacters(cause)
+      }`
     ),
   ];
 }
@@ -57,7 +66,9 @@ function holdLines(view: DelegationView): string[] {
 function relinkLines(view: DelegationView): string[] {
   const lines: string[] = [];
   if (view.mergedInto) {
-    lines.push(line("Relinked into", bold(view.mergedInto)));
+    lines.push(
+      line("Relinked into", bold(escapeControlCharacters(view.mergedInto))),
+    );
   }
   if (view.relinkPending) {
     lines.push(
@@ -68,17 +79,23 @@ function relinkLines(view: DelegationView): string[] {
     lines.push(
       line(
         "Replaced link",
-        `${link.linkId} ${
+        `${escapeControlCharacters(link.linkId)} ${
           link.endState === "pending"
             ? yellow(
-              `(Swamp Club not told yet, ${link.endAttempts} attempt(s))`,
+              `(Swamp Club not told yet, ${
+                escapeControlCharacters(String(link.endAttempts))
+              } attempt(s))`,
             )
             : dim("(Swamp Club told it ended)")
         }`,
       ),
     );
     if (link.endState === "pending" && link.lastEndError) {
-      lines.push(`  ${dim("last error:")} ${red(link.lastEndError)}`);
+      lines.push(
+        `  ${dim("last error:")} ${
+          red(escapeControlCharactersInText(link.lastEndError))
+        }`,
+      );
     }
   }
   return lines;
@@ -87,15 +104,17 @@ function relinkLines(view: DelegationView): string[] {
 function personText(view: DelegationView): string {
   const person = view.person;
   if (!person) return "";
-  return person.username
-    ? `${person.username} <${person.email}>`
-    : person.email;
+  return escapeControlCharacters(
+    person.username ? `${person.username} <${person.email}>` : person.email,
+  );
 }
 
 function externalText(view: DelegationView): string {
   const { external } = view;
   if (!external.userId) return "";
-  return `${external.display} (${external.platform}:${external.userId})`;
+  return escapeControlCharacters(
+    `${external.display} (${external.platform}:${external.userId})`,
+  );
 }
 
 function line(label: string, value: string): string {
@@ -105,17 +124,29 @@ function line(label: string, value: string): string {
 function clubLines(view: DelegationView): string[] {
   const { club } = view;
   const lines: string[] = [];
-  if (club.linkId) lines.push(line("Swamp Club link", club.linkId));
+  if (club.linkId) {
+    lines.push(line("Swamp Club link", escapeControlCharacters(club.linkId)));
+  }
   if (club.endState === "pending") {
     lines.push(
       line("Swamp Club", yellow("not told yet that this link ended")),
-      `  ${dim("attempts:")} ${club.endAttempts}`,
+      `  ${dim("attempts:")} ${
+        escapeControlCharacters(String(club.endAttempts))
+      }`,
     );
     if (club.lastEndError) {
-      lines.push(`  ${dim("last error:")} ${red(club.lastEndError)}`);
+      lines.push(
+        `  ${dim("last error:")} ${
+          red(escapeControlCharactersInText(club.lastEndError))
+        }`,
+      );
     }
     if (club.nextEndAttemptAt) {
-      lines.push(`  ${dim("next attempt:")} ${club.nextEndAttemptAt}`);
+      lines.push(
+        `  ${dim("next attempt:")} ${
+          escapeControlCharacters(club.nextEndAttemptAt)
+        }`,
+      );
     }
   } else if (club.endState === "done") {
     lines.push(line("Swamp Club", "told this link ended"));
@@ -126,39 +157,42 @@ function clubLines(view: DelegationView): string[] {
 function detailLines(view: DelegationView): string[] {
   const person = personText(view);
   const external = externalText(view);
+  const esc = escapeControlCharacters;
   return [
-    line("Delegation", bold(view.id)),
-    line("Integration", view.integrationId),
+    line("Delegation", bold(esc(view.id))),
+    line("Integration", esc(view.integrationId)),
     line("State", stateText(view.state)),
     ...holdLines(view),
     ...(person ? [line("Person", person)] : []),
     ...(external
       ? [
         line("External user", external),
-        `  ${dim("team:")} ${view.external.teamId}  ${
-          dim("workspace:")
-        } ${view.external.workspace}`,
+        `  ${dim("team:")} ${esc(view.external.teamId)}  ${dim("workspace:")} ${
+          esc(view.external.workspace)
+        }`,
       ]
       : []),
-    ...(view.createdAt ? [line("Created", view.createdAt)] : []),
-    ...(view.consentedAt ? [line("Consented", view.consentedAt)] : []),
-    ...(view.expiresAt ? [line("Expires", view.expiresAt)] : []),
-    ...(view.endedAt ? [line("Ended", view.endedAt)] : []),
-    ...(view.endCause ? [line("End cause", view.endCause)] : []),
-    ...(view.refusalReason ? [line("Refused", view.refusalReason)] : []),
+    ...(view.createdAt ? [line("Created", esc(view.createdAt))] : []),
+    ...(view.consentedAt ? [line("Consented", esc(view.consentedAt))] : []),
+    ...(view.expiresAt ? [line("Expires", esc(view.expiresAt))] : []),
+    ...(view.endedAt ? [line("Ended", esc(view.endedAt))] : []),
+    ...(view.endCause ? [line("End cause", esc(view.endCause))] : []),
+    ...(view.refusalReason ? [line("Refused", esc(view.refusalReason))] : []),
     ...(view.tokenGeneration !== undefined
       ? [
         line(
           "Tokens",
-          `generation ${view.tokenGeneration}${
+          `generation ${esc(String(view.tokenGeneration))}${
             view.accessTokenExpiresAt
-              ? `, access token expires ${view.accessTokenExpiresAt}`
+              ? `, access token expires ${esc(view.accessTokenExpiresAt)}`
               : ""
           }`,
         ),
       ]
       : []),
-    ...(view.ceilingDigest ? [line("Ceiling", dim(view.ceilingDigest))] : []),
+    ...(view.ceilingDigest
+      ? [line("Ceiling", dim(esc(view.ceilingDigest)))]
+      : []),
     ...clubLines(view),
     ...relinkLines(view),
   ];
@@ -185,9 +219,17 @@ export function renderDelegationEnded(
   }
   const lines: string[] = [];
   if (data.alreadyEnded) {
-    lines.push(yellow(`Delegation ${view.id} had already ended.`));
+    lines.push(
+      yellow(
+        `Delegation ${escapeControlCharacters(view.id)} had already ended.`,
+      ),
+    );
   } else {
-    lines.push(`${green("✓")} Delegation ${bold(view.id)} ended.`);
+    lines.push(
+      `${green("✓")} Delegation ${
+        bold(escapeControlCharacters(view.id))
+      } ended.`,
+    );
     if (view.club.endState === "pending") {
       lines.push(
         dim(
@@ -212,14 +254,16 @@ export function renderDelegationList(
     writeOutput("No delegations.");
     return;
   }
-  const rows = data.delegations.map((view) => [
-    view.id,
-    view.integrationId,
-    view.state,
-    personText(view),
-    externalText(view),
-    view.expiresAt ?? "",
-  ]);
+  const rows = data.delegations.map((view) =>
+    [
+      view.id,
+      view.integrationId,
+      view.state,
+      personText(view),
+      externalText(view),
+      view.expiresAt ?? "",
+    ].map(escapeControlCharacters)
+  );
   const headers = [
     "ID",
     "INTEGRATION",

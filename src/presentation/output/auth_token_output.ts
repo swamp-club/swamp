@@ -19,6 +19,7 @@
 
 import { bold, cyan, dim, green, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 import type { AuthTokenCreateData } from "../../libswamp/auth/token_create.ts";
 import type { AuthTokenListData } from "../../libswamp/auth/token_list.ts";
 import type { AuthTokenRevokeData } from "../../libswamp/auth/token_revoke.ts";
@@ -35,16 +36,17 @@ export function renderAuthTokenCreate(
   }
 
   const lines = [
-    `${bold(cyan("Token:"))} ${bold(data.name)}`,
-    `${bold(cyan("Collective:"))} ${data.collective}`,
-    `${bold(cyan("Scopes:"))} ${data.scopes.join(", ")}`,
-    `${bold(cyan("Expires:"))} ${data.expiresAt ?? "never"}`,
+    // token fields come back from swamp-club
+    `${bold(cyan("Token:"))} ${bold(esc(data.name))}`,
+    `${bold(cyan("Collective:"))} ${esc(data.collective)}`,
+    `${bold(cyan("Scopes:"))} ${data.scopes.map(esc).join(", ")}`,
+    `${bold(cyan("Expires:"))} ${esc(data.expiresAt ?? "never")}`,
     ...(data.mintedByTokenId
-      ? [`${bold(cyan("Minted by:"))} ${data.mintedByTokenId}`]
+      ? [`${bold(cyan("Minted by:"))} ${esc(data.mintedByTokenId)}`]
       : []),
-    `${bold(cyan("Fingerprint:"))} ${data.fingerprint}`,
+    `${bold(cyan("Fingerprint:"))} ${esc(data.fingerprint)}`,
     "",
-    `  ${bold(data.key)}`,
+    `  ${bold(esc(data.key))}`,
     "",
   ];
   if (data.signinToken) {
@@ -53,7 +55,7 @@ export function renderAuthTokenCreate(
         dim("(set as SWAMP_SIGNIN_TOKEN beside SWAMP_API_KEY in CI)")
       }`,
       "",
-      `  ${bold(data.signinToken)}`,
+      `  ${bold(esc(data.signinToken))}`,
       "",
     );
   }
@@ -79,13 +81,13 @@ export function renderAuthTokenList(
   if (data.tokens.length === 0) {
     writeOutput(
       [
-        `No API tokens found for collective ${bold(data.collective)}.`,
+        `No API tokens found for collective ${bold(esc(data.collective))}.`,
         ...(data.moreInactive
           ? [dim("Older inactive tokens are not shown.")]
           : []),
         dim(
           "Create one with: swamp auth token create --collective " +
-            data.collective + " --scopes <scopes>",
+            esc(data.collective) + " --scopes <scopes>",
         ),
       ].join("\n"),
     );
@@ -105,13 +107,13 @@ export function renderAuthTokenList(
     "LAST USED",
   ];
   const rows = data.tokens.map((token) => [
-    token.name,
-    token.id,
-    token.status,
-    showFingerprint ? token.fingerprint ?? "-" : token.keyPrefix,
-    token.scopes.join(", "),
-    token.createdAt,
-    token.lastUsedAt ?? dim("-"),
+    esc(token.name),
+    esc(token.id),
+    esc(token.status),
+    esc(showFingerprint ? token.fingerprint ?? "-" : token.keyPrefix),
+    token.scopes.map(esc).join(", "),
+    esc(token.createdAt),
+    token.lastUsedAt ? esc(token.lastUsedAt) : dim("-"),
   ]);
 
   const widths = headers.map((header, i) =>
@@ -150,8 +152,8 @@ export function renderAuthTokenRevoke(
   }
 
   writeOutput(
-    `${green(checkmark)} Token ${bold(data.id)} revoked from collective ${
-      bold(data.collective)
+    `${green(checkmark)} Token ${bold(esc(data.id))} revoked from collective ${
+      bold(esc(data.collective))
     }.`,
   );
 }
@@ -166,8 +168,8 @@ export function renderAuthTokenDelete(
   }
 
   writeOutput(
-    `${green(checkmark)} Token ${bold(data.id)} deleted from collective ${
-      bold(data.collective)
+    `${green(checkmark)} Token ${bold(esc(data.id))} deleted from collective ${
+      bold(esc(data.collective))
     }.`,
   );
 }

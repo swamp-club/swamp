@@ -17,12 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
+
 /** an omitted value is only in the run's record, so it is named, not shown */
 export function inputPairs(
   item: { inputs?: Record<string, unknown>; inputsOmitted?: string[] },
 ): string[] {
   return [
-    ...Object.entries(item.inputs ?? {}).map(([k, v]) => `${k}=${String(v)}`),
-    ...(item.inputsOmitted ?? []).map((k) => `${k}=… (omitted)`),
+    ...Object.entries(item.inputs ?? {}).map(([k, v]) =>
+      `${escapeControlCharacters(k)}=${escapeControlCharacters(String(v))}`
+    ),
+    ...(item.inputsOmitted ?? []).map((k) =>
+      `${escapeControlCharacters(k)}=… (omitted)`
+    ),
   ];
 }

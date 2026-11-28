@@ -26,6 +26,7 @@ import type { EventHandlers } from "../../libswamp/stream.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 /**
  * A clean scan passes; any cleartext leak fails so the command can gate CI.
@@ -51,7 +52,11 @@ function renderUnresolvedLog(data: DoctorSecretsData): void {
     } ${dim("(type schema unavailable — install the extension to scan them)")}`,
   );
   for (const u of data.unresolved) {
-    writeOutput(`    ${yellow("•")} ${u.definitionName} ${dim(`[${u.type}]`)}`);
+    writeOutput(
+      `    ${yellow("•")} ${escapeControlCharacters(u.definitionName)} ${
+        dim(`[${escapeControlCharacters(u.type)}]`)
+      }`,
+    );
   }
 }
 
@@ -89,17 +94,23 @@ class LogDoctorSecretsRenderer implements DoctorSecretsRenderer {
 
         for (const finding of data.findings) {
           writeOutput(
-            `\n  ${bold(finding.definitionName)} ${dim(`[${finding.type}]`)}`,
+            `\n  ${bold(escapeControlCharacters(finding.definitionName))} ${
+              dim(`[${escapeControlCharacters(finding.type)}]`)
+            }`,
           );
           for (const r of finding.remediations) {
-            writeOutput(`    ${red("•")} ${bold(r.path)}`);
             writeOutput(
-              `        ${
-                dim("1. Store the secret:")
-              } swamp vault put ${r.vaultName} ${r.vaultKey} <value>`,
+              `    ${red("•")} ${bold(escapeControlCharacters(r.path))}`,
             );
             writeOutput(
-              `        ${dim("2. Reference it:")}     ${r.expression}`,
+              `        ${dim("1. Store the secret:")} swamp vault put ${
+                escapeControlCharacters(r.vaultName)
+              } ${escapeControlCharacters(r.vaultKey)} <value>`,
+            );
+            writeOutput(
+              `        ${dim("2. Reference it:")}     ${
+                escapeControlCharacters(r.expression)
+              }`,
             );
           }
         }

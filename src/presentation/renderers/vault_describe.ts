@@ -26,13 +26,17 @@ import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { escapeControlCharactersInText } from "../../domain/control_characters.ts";
 
+// JSON.stringify leaves DEL and C1 raw
 class LogVaultDescribeRenderer implements Renderer<VaultDescribeEvent> {
   handlers(): EventHandlers<VaultDescribeEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        console.log(
+          escapeControlCharactersInText(JSON.stringify(e.data, null, 2)),
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);

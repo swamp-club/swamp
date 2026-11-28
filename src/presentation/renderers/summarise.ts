@@ -30,6 +30,10 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
 import type { ActivitySummary } from "../../domain/summary/summary_types.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 function formatDateTime(iso?: string): string {
   if (!iso) return "unknown";
@@ -37,7 +41,7 @@ function formatDateTime(iso?: string): string {
     const d = new Date(iso);
     return d.toISOString().replace("T", " ").substring(0, 16);
   } catch {
-    return iso;
+    return escapeControlCharacters(iso);
   }
 }
 
@@ -71,9 +75,19 @@ function renderMethodExecutions(
 
   const cols = getTerminalColumns();
 
-  for (const model of models) {
+  for (const raw of models) {
+    // escaped before measuring, so padding counts the characters printed
+    const model = {
+      ...raw,
+      methods: raw.methods.map((m) => ({
+        ...m,
+        method: escapeControlCharacters(m.method),
+      })),
+    };
     writeOutput(
-      `  Behavior: ${bold(model.modelName)} ${dim(`(${model.type})`)}`,
+      `  Behavior: ${bold(escapeControlCharacters(model.modelName))} ${
+        dim(`(${escapeControlCharacters(model.type)})`)
+      }`,
     );
 
     const maxMethod = Math.min(
@@ -97,11 +111,13 @@ function renderMethodExecutions(
           const dur = run.durationMs !== undefined
             ? formatDuration(run.durationMs)
             : "";
-          const trigger = dim(run.triggeredBy);
+          const trigger = dim(escapeControlCharacters(run.triggeredBy));
           const statusStr = run.status === "failed"
-            ? red(run.status)
-            : dim(run.status);
-          const errStr = run.error ? `  ${red(run.error)}` : "";
+            ? red(escapeControlCharacters(run.status))
+            : dim(escapeControlCharacters(run.status));
+          const errStr = run.error
+            ? `  ${red(escapeControlCharactersInText(run.error))}`
+            : "";
           writeOutput(
             `      ${dim(time)}  ${statusStr}  ${dur}  ${trigger}${errStr}`,
           );
@@ -113,7 +129,7 @@ function renderMethodExecutions(
         if (lastFailed?.error) {
           writeOutput(
             `    ${"".padEnd(maxMethod + 3)}${
-              red(`last error: "${lastFailed.error}"`)
+              red(`last error: "${escapeControlCharacters(lastFailed.error)}"`)
             }`,
           );
         }
@@ -127,7 +143,10 @@ function renderWorkflowRuns(
   summary: ActivitySummary,
   verbose: boolean,
 ): void {
-  const groups = summary.workflows;
+  const groups = summary.workflows.map((g) => ({
+    ...g,
+    workflowName: escapeControlCharacters(g.workflowName),
+  }));
   if (groups.length === 0) {
     writeOutput(dim("Workflow Runs: none"));
     writeOutput("");
@@ -165,24 +184,30 @@ function renderWorkflowRuns(
       for (const run of group.runs) {
         const time = formatDateTime(run.startedAt);
         const statusStr = run.status === "failed"
-          ? red(run.status)
-          : dim(run.status);
+          ? red(escapeControlCharacters(run.status))
+          : dim(escapeControlCharacters(run.status));
         const failedAt = run.firstFailedStep
-          ? `  ${red(`at ${run.firstFailedStep}`)}`
+          ? `  ${red(`at ${escapeControlCharacters(run.firstFailedStep)}`)}`
           : "";
         writeOutput(`    ${dim(time)}  ${statusStr}${failedAt}`);
 
         for (const step of run.steps) {
-          const model = step.modelName ? ` (${step.modelName})` : "";
+          const model = step.modelName
+            ? ` (${escapeControlCharacters(step.modelName)})`
+            : "";
           const dur = step.durationMs !== undefined
             ? `  ${formatDuration(step.durationMs)}`
             : "";
           const stepStatus = step.status === "failed"
-            ? red(step.status)
-            : dim(step.status);
-          const errStr = step.error ? `  ${red(step.error)}` : "";
+            ? red(escapeControlCharacters(step.status))
+            : dim(escapeControlCharacters(step.status));
+          const errStr = step.error
+            ? `  ${red(escapeControlCharactersInText(step.error))}`
+            : "";
           writeOutput(
-            `      ${step.jobName} > ${step.stepName}${model}  ${stepStatus}${dur}${errStr}`,
+            `      ${escapeControlCharacters(step.jobName)} > ${
+              escapeControlCharacters(step.stepName)
+            }${model}  ${stepStatus}${dur}${errStr}`,
           );
         }
       }
@@ -200,7 +225,7 @@ function renderWorkflowRuns(
         if (failedStep?.error) {
           writeOutput(
             `  ${"".padEnd(maxLabel + 2)} ${
-              red(`last error: "${failedStep.error}"`)
+              red(`last error: "${escapeControlCharacters(failedStep.error)}"`)
             }`,
           );
         }
@@ -229,7 +254,7 @@ function renderDataSummary(
     for (const group of byModelType) {
       writeOutput(
         `  ${
-          group.modelType.padEnd(30)
+          escapeControlCharacters(group.modelType).padEnd(30)
         } ${group.items} items, ${group.versions} versions`,
       );
     }

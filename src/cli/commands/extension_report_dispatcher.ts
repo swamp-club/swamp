@@ -53,6 +53,8 @@ import {
   isGhCliAvailable,
 } from "../../infrastructure/process/gh_cli.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
+import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharactersInText } from "../../domain/control_characters.ts";
 
 export type ReportType = "bug" | "feature" | "security";
 
@@ -222,7 +224,7 @@ export async function dispatchRepositoryReport(
 ): Promise<RepositoryDispatchResult> {
   const openBrowserFn = deps.openBrowser ?? openBrowser;
   const writeLog = deps.writeLog ?? ((text) => {
-    if (deps.logger) deps.logger.info(text);
+    if (deps.logger) deps.logger.info(escapeLogTemplate(text));
     else console.log(text);
   });
 
@@ -472,13 +474,14 @@ function printHandoffStdout(
   // JSON mode: the renderer embeds title/body in the payload. Printing
   // freeform markdown to stdout would corrupt the structured output.
   if (outputMode === "json") return;
+  // the body carries the manifest's repository and version
   writeLog(
     [
       "Preparing report — you can copy this if the handoff fails:",
       "---",
-      `Title: ${title}`,
+      `Title: ${escapeControlCharactersInText(title)}`,
       "",
-      body,
+      escapeControlCharactersInText(body),
       "---",
     ].join("\n"),
   );

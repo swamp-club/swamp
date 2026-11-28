@@ -34,6 +34,10 @@ import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 function filterReportTypes(
   types: ReportTypeSearchItem[],
@@ -138,9 +142,20 @@ export function createReportTypeSearchRenderer(
   }
 }
 
+// extension-authored type metadata
+function escapedItem(item: ReportTypeSearchItem): ReportTypeSearchItem {
+  return {
+    ...item,
+    type: escapeControlCharacters(item.type),
+    scope: escapeControlCharacters(item.scope),
+    description: escapeControlCharacters(item.description),
+  };
+}
+
 function renderReportTypeResultLine(
-  item: ReportTypeSearchItem,
+  rawItem: ReportTypeSearchItem,
 ): React.ReactElement {
+  const item = escapedItem(rawItem);
   return (
     <Text>
       {item.type} <Text dimColor>[{item.scope}]</Text>
@@ -149,11 +164,12 @@ function renderReportTypeResultLine(
 }
 
 function renderReportTypePreview(
-  item: ReportTypeSearchItem,
+  rawItem: ReportTypeSearchItem,
   _detail: ReportTypeSearchItem | undefined,
   width: number,
   _height: number,
 ): React.ReactElement {
+  const item = escapedItem(rawItem);
   const innerWidth = Math.max(10, width - 1);
   return (
     <Box flexDirection="column" marginLeft={1} width={innerWidth}>
@@ -165,8 +181,11 @@ function renderReportTypePreview(
 }
 
 function renderReportTypeScrollback(
-  item: ReportTypeSearchItem,
+  rawItem: ReportTypeSearchItem,
   _detail: ReportTypeSearchItem | undefined,
 ): string {
-  return `${item.type} [${item.scope}]\n${item.description}`;
+  const item = escapedItem(rawItem);
+  return `${item.type} [${item.scope}]\n${
+    escapeControlCharactersInText(rawItem.description)
+  }`;
 }

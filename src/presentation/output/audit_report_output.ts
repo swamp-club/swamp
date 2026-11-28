@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, dim } from "@std/fmt/colors";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AuditReportResponse } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
@@ -31,9 +35,10 @@ export function renderAuditReport(
     return;
   }
 
-  writeOutput(bold(`${data.name}: ${data.description}`));
-  writeOutput(dim(`Period: ${data.from} to ${data.to}`));
-  writeOutput(dim(`Generated: ${data.generatedAt}`));
+  const esc = escapeControlCharacters;
+  writeOutput(bold(`${esc(data.name)}: ${esc(data.description)}`));
+  writeOutput(dim(`Period: ${esc(data.from)} to ${esc(data.to)}`));
+  writeOutput(dim(`Generated: ${esc(data.generatedAt)}`));
   writeOutput("");
-  writeOutput(data.markdown);
+  writeOutput(escapeControlCharactersInText(data.markdown));
 }

@@ -23,6 +23,10 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 class LogReportDescribeRenderer implements Renderer<ReportDescribeEvent> {
   handlers(): EventHandlers<ReportDescribeEvent> {
@@ -30,11 +34,15 @@ class LogReportDescribeRenderer implements Renderer<ReportDescribeEvent> {
       resolving: () => {},
       completed: (e) => {
         const d = e.data;
-        writeOutput(`Report: ${d.name}`);
-        writeOutput(`Description: ${d.description}`);
-        writeOutput(`Scope: ${d.scope}`);
+        writeOutput(`Report: ${escapeControlCharacters(d.name)}`);
+        writeOutput(
+          `Description: ${escapeControlCharactersInText(d.description)}`,
+        );
+        writeOutput(`Scope: ${escapeControlCharacters(d.scope)}`);
         if (d.labels.length > 0) {
-          writeOutput(`Labels: ${d.labels.join(", ")}`);
+          writeOutput(
+            `Labels: ${d.labels.map(escapeControlCharacters).join(", ")}`,
+          );
         }
       },
       error: (e) => {

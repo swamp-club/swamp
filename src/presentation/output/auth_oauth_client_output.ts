@@ -20,6 +20,7 @@
 import { bold, cyan, yellow } from "@std/fmt/colors";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 import type { AuthOAuthClientRegisterData } from "../../libswamp/auth/oauth_client_register.ts";
 import type { OutputMode } from "./output.ts";
 
@@ -33,17 +34,19 @@ export function renderAuthOAuthClientRegister(
   }
 
   writeOutput([
-    `${bold(cyan("OAuth client:"))} ${bold(data.clientName)}`,
-    `${bold(cyan("Provider:"))} ${data.provider}`,
-    `${bold(cyan("Client id:"))} ${data.clientId}`,
+    `${bold(cyan("OAuth client:"))} ${bold(esc(data.clientName))}`,
+    `${bold(cyan("Provider:"))} ${esc(data.provider)}`,
+    `${bold(cyan("Client id:"))} ${esc(data.clientId)}`,
     `${bold(cyan("Client secret:"))}`,
     "",
-    `  ${bold(data.clientSecret)}`,
+    `  ${bold(esc(data.clientSecret))}`,
     "",
     "Start swamp serve with --oauth-client-id (or SWAMP_OAUTH_CLIENT_ID) and the secret in",
     "--oauth-client-secret-file, SWAMP_OAUTH_CLIENT_SECRET_FILE or SWAMP_OAUTH_CLIENT_SECRET.",
     ...(data.provider === DEFAULT_SWAMP_CLUB_URL ? [] : [
-      `serve does not read SWAMP_CLUB_URL: also pass --oauth-provider ${data.provider}.`,
+      `serve does not read SWAMP_CLUB_URL: also pass --oauth-provider ${
+        esc(data.provider)
+      }.`,
     ]),
     yellow(
       "The secret is shown once and will not be displayed again — store it now.",

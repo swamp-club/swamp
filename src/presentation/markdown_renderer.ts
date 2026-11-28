@@ -19,6 +19,7 @@
 
 import { Marked } from "marked";
 import TerminalRenderer from "marked-terminal";
+import { escapeControlCharactersInText } from "../domain/control_characters.ts";
 
 interface TableCellToken {
   header?: boolean;
@@ -56,7 +57,8 @@ export function renderMarkdownToTerminal(
   markdown: string,
   options?: WidthOptions,
 ): string {
-  let md = markdown;
+  // escaped before marked runs so its own styling survives and the source's cannot drive the terminal
+  let md = escapeControlCharactersInText(markdown);
   if (options?.maxColWidth) {
     md = truncateMarkdownTableCells(md, options.maxColWidth);
   }
@@ -196,9 +198,10 @@ export function renderUntrustedMarkdownToTerminal(
         : {},
     ),
   });
+  const source = escapeControlCharactersInText(markdown);
   const md = options?.maxColWidth
-    ? truncateMarkdownTableCells(markdown, options.maxColWidth)
-    : markdown;
+    ? truncateMarkdownTableCells(source, options.maxColWidth)
+    : source;
   const result = marked.parse(md);
   return typeof result === "string" ? result : md;
 }
@@ -207,10 +210,11 @@ export function renderMarkdownPlain(
   markdown: string,
   options?: WidthOptions,
 ): string {
+  const source = escapeControlCharactersInText(markdown);
   if (options?.maxColWidth) {
-    return truncateMarkdownTableCells(markdown, options.maxColWidth);
+    return truncateMarkdownTableCells(source, options.maxColWidth);
   }
-  return markdown;
+  return source;
 }
 
 const TABLE_SEPARATOR_RE = /^\|[\s:]*-+[\s:]*(\|[\s:]*-+[\s:]*)*\|?\s*$/;

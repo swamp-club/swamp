@@ -29,6 +29,10 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { bold, yellow } from "@std/fmt/colors";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -51,7 +55,8 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
         writeOutput(
           [
             "",
-            yellow(bold("Warning:")) + " " + e.data.message,
+            yellow(bold("Warning:")) + " " +
+            escapeControlCharactersInText(e.data.message),
             "",
           ].join("\n"),
         );
@@ -60,13 +65,13 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
         const data = e.data;
         const lines = [
           bold("Datastore Setup Complete"),
-          `  Type:     ${data.type}`,
+          `  Type:     ${escapeControlCharacters(data.type)}`,
         ];
         if (data.path) {
-          lines.push(`  Path:     ${data.path}`);
+          lines.push(`  Path:     ${escapeControlCharacters(data.path)}`);
         }
         if (data.namespace) {
-          lines.push(`  Namespace: ${data.namespace}`);
+          lines.push(`  Namespace: ${escapeControlCharacters(data.namespace)}`);
         }
         if (data.format !== undefined) {
           lines.push(
@@ -88,20 +93,27 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
           lines.push(`  Hydrated: ${data.filesPulled} pulled`);
         }
         if (data.format === undefined) {
-          lines.push(`  Dirs:     ${data.directoriesMigrated.join(", ")}`);
+          lines.push(
+            `  Dirs:     ${
+              data.directoriesMigrated.map(escapeControlCharacters).join(", ")
+            }`,
+          );
         }
 
         if (data.sourcePath && data.destinationPath) {
           lines.push("");
           lines.push(
             yellow(bold("Relocated:")) + " " +
-              data.directoriesMigrated.join(", ") +
-              " now resolve under " + bold(data.destinationPath),
+              data.directoriesMigrated.map(escapeControlCharacters).join(", ") +
+              " now resolve under " +
+              bold(escapeControlCharacters(data.destinationPath)),
           );
           lines.push(
             data.sourceKept
-              ? `  Copied from: ${data.sourcePath} (left in place)`
-              : `  Moved from: ${data.sourcePath}`,
+              ? `  Copied from: ${
+                escapeControlCharacters(data.sourcePath)
+              } (left in place)`
+              : `  Moved from: ${escapeControlCharacters(data.sourcePath)}`,
           );
         }
 
@@ -109,11 +121,13 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
           lines.push("");
           lines.push(yellow("Warnings:"));
           for (const err of data.errors) {
-            lines.push(`  ${yellow("!")} ${err}`);
+            lines.push(
+              `  ${yellow("!")} ${escapeControlCharactersInText(err)}`,
+            );
           }
           if (data.retryHint) {
             lines.push("");
-            lines.push(yellow(data.retryHint));
+            lines.push(yellow(escapeControlCharactersInText(data.retryHint)));
           }
         }
 

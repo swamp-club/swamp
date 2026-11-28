@@ -40,6 +40,10 @@ import type { WorkflowHistoryGetResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { writeJsonValue } from "../../presentation/output/json_stream.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -133,15 +137,26 @@ export async function workflowHistoryOutputsAction(
   if (cliCtx.outputMode === "json") {
     await writeJsonValue(outputs);
   } else {
-    if (Object.keys(outputs).length === 0) {
-      writeOutput("No step outputs found for this run.");
-    } else {
-      for (const [stepName, stepOutputs] of Object.entries(outputs)) {
-        writeOutput(`${stepName}:`);
-        for (const [key, value] of Object.entries(stepOutputs)) {
-          writeOutput(`  ${key}: ${JSON.stringify(value)}`);
-        }
-      }
+    renderStepOutputsLog(outputs);
+  }
+}
+
+export function renderStepOutputsLog(
+  outputs: Record<string, Record<string, unknown>>,
+): void {
+  if (Object.keys(outputs).length === 0) {
+    writeOutput("No step outputs found for this run.");
+    return;
+  }
+  for (const [stepName, stepOutputs] of Object.entries(outputs)) {
+    writeOutput(`${escapeControlCharacters(stepName)}:`);
+    for (const [key, value] of Object.entries(stepOutputs)) {
+      // JSON.stringify leaves DEL and C1 raw
+      writeOutput(
+        `  ${escapeControlCharacters(key)}: ${
+          escapeControlCharactersInText(String(JSON.stringify(value)))
+        }`,
+      );
     }
   }
 }

@@ -30,8 +30,17 @@ import {
 } from "./extension_pull_prompts.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  escapeLogTemplate,
+  getSwampLogger,
+} from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { UserError } from "../../domain/errors.ts";
+
+// these lines carry registry versions, channels and pinning parents
+function asLogMessage(line: string): string {
+  return escapeLogTemplate(escapeControlCharacters(line));
+}
 
 export interface ExtensionPullRenderer extends Renderer<ExtensionPullEvent> {
   /**
@@ -321,14 +330,13 @@ class LogExtensionPullRenderer implements ExtensionPullRenderer {
   }
 
   renderReplacement(replacement: ExtensionReplacement): void {
-    // Pure wording with no braces, logged as written.
     for (const line of replacementSummary(replacement)) {
-      this.#logger.warn(line);
+      this.#logger.warn(asLogMessage(line));
     }
   }
 
   renderUnoptedPrerelease(notice: UnoptedPrereleaseNotice): void {
-    this.#logger.warn(unoptedPrereleaseWarning(notice));
+    this.#logger.warn(asLogMessage(unoptedPrereleaseWarning(notice)));
   }
 }
 

@@ -35,6 +35,10 @@ import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 function filterVaults(
   vaults: VaultSearchItem[],
@@ -151,7 +155,8 @@ export function createVaultSearchRenderer(
 function renderVaultResultLine(item: VaultSearchItem): React.ReactElement {
   return (
     <Text>
-      {item.name} <Text dimColor>({item.type})</Text>
+      {escapeControlCharacters(item.name)}{" "}
+      <Text dimColor>({escapeControlCharacters(item.type)})</Text>
     </Text>
   );
 }
@@ -166,20 +171,34 @@ function renderVaultPreview(
   if (!detail) {
     return (
       <Box flexDirection="column" marginLeft={1} width={innerWidth}>
-        <Text bold wrap="truncate-end">{item.name}</Text>
-        <Text dimColor wrap="truncate-end">type: {item.type}</Text>
-        <Text dimColor wrap="truncate-end">id: {item.id}</Text>
+        <Text bold wrap="truncate-end">
+          {escapeControlCharacters(item.name)}
+        </Text>
+        <Text dimColor wrap="truncate-end">
+          type: {escapeControlCharacters(item.type)}
+        </Text>
+        <Text dimColor wrap="truncate-end">
+          id: {escapeControlCharacters(item.id)}
+        </Text>
       </Box>
     );
   }
 
-  const configJson = JSON.stringify(detail.config, null, 2);
+  const configJson = escapeControlCharactersInText(
+    JSON.stringify(detail.config, null, 2),
+  );
   const lines: React.ReactElement[] = [
-    <Text key="name" bold wrap="truncate-end">{detail.name}</Text>,
-    <Text key="type" dimColor wrap="truncate-end">type: {detail.type}</Text>,
-    <Text key="id" dimColor wrap="truncate-end">id: {detail.id}</Text>,
+    <Text key="name" bold wrap="truncate-end">
+      {escapeControlCharacters(detail.name)}
+    </Text>,
+    <Text key="type" dimColor wrap="truncate-end">
+      type: {escapeControlCharacters(detail.type)}
+    </Text>,
+    <Text key="id" dimColor wrap="truncate-end">
+      id: {escapeControlCharacters(detail.id)}
+    </Text>,
     <Text key="created" dimColor wrap="truncate-end">
-      created: {detail.createdAt}
+      created: {escapeControlCharacters(detail.createdAt)}
     </Text>,
     <Text key="cfg-gap" />,
     <Text key="cfg-hdr" color="cyan" bold wrap="truncate-end">Config:</Text>,
@@ -198,16 +217,20 @@ function renderVaultScrollback(
   detail: VaultDescribeData | undefined,
 ): string {
   if (!detail) {
-    return `${item.name} (${item.type})\nID: ${item.id}`;
+    return `${escapeControlCharacters(item.name)} (${
+      escapeControlCharacters(item.type)
+    })\nID: ${escapeControlCharacters(item.id)}`;
   }
 
   const lines: string[] = [
-    `${detail.name} (${detail.type})`,
-    `ID: ${detail.id}`,
-    `created: ${detail.createdAt}`,
+    `${escapeControlCharacters(detail.name)} (${
+      escapeControlCharacters(detail.type)
+    })`,
+    `ID: ${escapeControlCharacters(detail.id)}`,
+    `created: ${escapeControlCharacters(detail.createdAt)}`,
     "",
     "Config:",
-    JSON.stringify(detail.config, null, 2),
+    escapeControlCharactersInText(JSON.stringify(detail.config, null, 2)),
   ];
 
   return lines.join("\n");

@@ -68,3 +68,13 @@ Deno.test("formatReportFrame: showEmpty frames empty markdown", () => {
   assertEquals(lines[0].length, 60);
   assertEquals(lines[lines.length - 1], "─".repeat(60));
 });
+
+Deno.test("formatReportFrame: escapes control characters in the report name", () => {
+  setColorEnabled(false);
+  try {
+    const frame = formatReportFrame("cost\x1b]0;owned\x07", "body", 40) ?? "";
+    assertStringIncludes(frame, "── Report: cost\\x1b]0;owned\\x07 ");
+  } finally {
+    setColorEnabled(true);
+  }
+});

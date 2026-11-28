@@ -20,6 +20,7 @@
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { Ceiling } from "../../domain/access/ceiling.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
   IntegrationListData,
@@ -27,7 +28,8 @@ import type {
 } from "../../libswamp/access/integration_list.ts";
 import type { OutputMode } from "./output.ts";
 
-function stateText(state: string): string {
+function stateText(rawState: string): string {
+  const state = escapeControlCharacters(rawState);
   return state === "active" ? green(state) : red(state);
 }
 
@@ -41,23 +43,31 @@ function ceilingLines(ceiling: unknown): string[] {
   if (document.ceiling.length === 0) {
     return [`  ${dim("(empty: allows nothing)")}`];
   }
-  const width = maxOf(document.ceiling.map((e) => e.resource.length))!;
-  return document.ceiling.map((entry) =>
-    `  ${entry.resource.padEnd(width)}  ${entry.actions.join(", ")}`
+  const resources = document.ceiling.map((e) =>
+    escapeControlCharacters(e.resource)
+  );
+  const width = maxOf(resources.map((r) => r.length))!;
+  return document.ceiling.map((entry, i) =>
+    `  ${resources[i].padEnd(width)}  ${
+      escapeControlCharacters(entry.actions.join(", "))
+    }`
   );
 }
 
 function detailLines(view: IntegrationView): string[] {
+  const esc = escapeControlCharacters;
   return [
-    `${bold(cyan("Integration:"))} ${bold(view.id)}`,
-    `${bold(cyan("Name:"))} ${view.name}`,
+    `${bold(cyan("Integration:"))} ${bold(esc(view.id))}`,
+    `${bold(cyan("Name:"))} ${esc(view.name)}`,
     `${bold(cyan("State:"))} ${stateText(view.state)}`,
-    `${bold(cyan("Client:"))} integration:${view.id}`,
-    `${bold(cyan("Created:"))} ${view.createdAt}`,
+    `${bold(cyan("Client:"))} integration:${esc(view.id)}`,
+    `${bold(cyan("Created:"))} ${esc(view.createdAt)}`,
     ...(view.ceilingChangedAt
-      ? [`${bold(cyan("Ceiling changed:"))} ${view.ceilingChangedAt}`]
+      ? [`${bold(cyan("Ceiling changed:"))} ${esc(view.ceilingChangedAt)}`]
       : []),
-    ...(view.revokedAt ? [`${bold(cyan("Revoked:"))} ${view.revokedAt}`] : []),
+    ...(view.revokedAt
+      ? [`${bold(cyan("Revoked:"))} ${esc(view.revokedAt)}`]
+      : []),
     ...(view.requireEmailMatch
       ? [
         `${
@@ -65,7 +75,7 @@ function detailLines(view: IntegrationView): string[] {
         } only the person whose email the app names may approve`,
       ]
       : []),
-    `${bold(cyan("Ceiling:"))} ${dim(view.ceilingDigest)}`,
+    `${bold(cyan("Ceiling:"))} ${dim(esc(view.ceilingDigest))}`,
     ...ceilingLines(view.ceiling),
   ];
 }
@@ -82,7 +92,7 @@ export function renderIntegrationRegistered(
   }
   writeOutput(detailLines(view).join("\n"));
   writeOutput(`${bold(cyan("Credential:"))}`);
-  console.log(`\n  ${bold(credential)}\n`);
+  console.log(`\n  ${bold(escapeControlCharacters(credential))}\n`);
   writeOutput(
     yellow(
       "This is the only time it is shown. Store it securely: only its hash is kept.",
@@ -106,7 +116,11 @@ export function renderIntegrationCeilingChanged(
   mode: OutputMode,
 ): void {
   if (mode !== "json") {
-    writeOutput(`${green("✓")} Ceiling of ${bold(view.id)} changed.`);
+    writeOutput(
+      `${green("✓")} Ceiling of ${
+        bold(escapeControlCharacters(view.id))
+      } changed.`,
+    );
   }
   renderIntegration(view, mode);
 }
@@ -120,10 +134,11 @@ export function renderIntegrationRevoked(
     console.log(JSON.stringify({ ...view, alreadyRevoked }, null, 2));
     return;
   }
+  const id = escapeControlCharacters(view.id);
   writeOutput(
     alreadyRevoked
-      ? yellow(`Integration ${view.id} was already revoked.`)
-      : `${green("✓")} Integration ${bold(view.id)} revoked.`,
+      ? yellow(`Integration ${id} was already revoked.`)
+      : `${green("✓")} Integration ${bold(id)} revoked.`,
   );
   writeOutput(detailLines(view).join("\n"));
 }
@@ -147,12 +162,11 @@ export function renderIntegrationList(
     );
     return;
   }
-  const rows = data.integrations.map((view) => [
-    view.id,
-    view.state,
-    view.name,
-    view.createdAt,
-  ]);
+  const rows = data.integrations.map((view) =>
+    [view.id, view.state, view.name, view.createdAt].map(
+      escapeControlCharacters,
+    )
+  );
   const headers = ["ID", "STATE", "NAME", "CREATED"];
   const widths = headers.map((header, i) =>
     maxOf([header.length, ...rows.map((row) => row[i].length)])!

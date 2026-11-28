@@ -54,6 +54,7 @@ import type {
 } from "../../serve/protocol.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -133,12 +134,12 @@ export function renderWaits(
       schema: JSON.stringify(wait.schema),
     });
     if (!quiet) {
-      writeOutput(`  ${wait.nextCommand}`);
+      writeOutput(`  ${escapeControlCharacters(wait.nextCommand)}`);
       if (wait.signalByKeyCommand !== undefined) {
         // An alternative to the line above, labelled so it is not read as
         // a second step; a shell comment keeps both lines pasteable.
         writeOutput("  # or by key:");
-        writeOutput(`  ${wait.signalByKeyCommand}`);
+        writeOutput(`  ${escapeControlCharacters(wait.signalByKeyCommand)}`);
       }
     }
   }
@@ -151,7 +152,7 @@ export function renderWaits(
         runId: wait.runId,
       },
     );
-    if (!quiet) writeOutput(`  ${wait.nextCommand}`);
+    if (!quiet) writeOutput(`  ${escapeControlCharacters(wait.nextCommand)}`);
   }
   if (pending !== undefined) {
     renderPending(cliCtx, pending);

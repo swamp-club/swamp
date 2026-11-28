@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { integrationRefusalReason } from "../../domain/access/grant_based_access_decision_service.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import type { AccessDecision } from "../../domain/access/access_decision_service.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -76,11 +77,15 @@ export function runVaultAccessLines(
   const verdict = report.allowed ? "ALLOW" : "DENY";
   const scope = runVaultScopeTag(report);
   const lines = [
-    `In serve runs: ${verdict} ${report.action} vault ${report.vault} (${scope})`,
+    `In serve runs: ${verdict} ${
+      escapeControlCharacters(report.action)
+    } vault ${escapeControlCharacters(report.vault)} (${scope})`,
   ];
   if (report.triggerScope) {
     lines.push(
-      `This is a trigger principal: this applies to ${report.triggerScope}.`,
+      `This is a trigger principal: this applies to ${
+        escapeControlCharacters(report.triggerScope)
+      }.`,
     );
   }
   return lines;
@@ -93,7 +98,9 @@ interface ApprovalDecision {
 }
 
 export function impliedMarker(decision: ApprovalDecision): string {
-  return decision.impliedBy ? ` [implied by ${decision.impliedBy}]` : "";
+  return decision.impliedBy
+    ? ` [implied by ${escapeControlCharacters(decision.impliedBy)}]`
+    : "";
 }
 
 /**
@@ -222,13 +229,15 @@ export interface AccessCheckRenderer {
 }
 
 function formatSubject(subject: AccessDecision["subject"]): string {
-  return `${subject.kind}:${subject.name}`;
+  return escapeControlCharacters(`${subject.kind}:${subject.name}`);
 }
 
 function checkedTarget(result: AccessCheckResult): string {
-  return result.method
-    ? `${result.resource} method ${result.method}`
-    : result.resource;
+  return escapeControlCharacters(
+    result.method
+      ? `${result.resource} method ${result.method}`
+      : result.resource,
+  );
 }
 
 class LogAccessCheckRenderer implements AccessCheckRenderer {
@@ -249,9 +258,9 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
 
     if (result.decisions.length === 0) {
       writeOutput(
-        `DENY (implicit) — no matching grants for ${result.subject} ${result.action} ${
-          checkedTarget(result)
-        }`,
+        `DENY (implicit) — no matching grants for ${
+          escapeControlCharacters(result.subject)
+        } ${escapeControlCharacters(result.action)} ${checkedTarget(result)}`,
       );
       if (note) writeOutput(note);
       const runLines = runVaultAccessLines(result.runVaultAccess);
@@ -263,39 +272,45 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
     }
 
     const firstDecision = result.decisions[0];
+    const client = result.client
+      ? ` as ${escapeControlCharacters(result.client)}`
+      : "";
     const reason = integrationRefusalReason(firstDecision.grantId);
     if (reason) {
       writeOutput(
-        `DENY: ${reason} (${result.action} → ${checkedTarget(result)})${
-          result.client ? ` as ${result.client}` : ""
-        }`,
+        `DENY: ${reason} (${escapeControlCharacters(result.action)} → ${
+          checkedTarget(result)
+        })${client}`,
       );
       return;
     }
-    const effect = firstDecision.effect.toUpperCase();
-    const via = `grant ${firstDecision.grantId.slice(0, 8)}…`;
+    const effect = escapeControlCharacters(firstDecision.effect.toUpperCase());
+    const via = `grant ${
+      escapeControlCharacters(firstDecision.grantId).slice(0, 8)
+    }…`;
     const subject = formatSubject(firstDecision.subject);
     writeOutput(
-      `${effect} via ${via} (${subject} → ${result.action} → ${
-        checkedTarget(result)
-      })${impliedMarker(firstDecision)}${
+      `${effect} via ${via} (${subject} → ${
+        escapeControlCharacters(result.action)
+      } → ${checkedTarget(result)})${impliedMarker(firstDecision)}${
         firstDecision.dependsOn
           ? " (depends on the run)"
           : result.decisions.some((d) => d.effect === "deny" && d.dependsOn)
           ? " (a deny depends on the run)"
           : ""
-      }${result.client ? ` as ${result.client}` : ""}`,
+      }${client}`,
     );
 
     if (result.decisions.length > 1) {
       writeOutput("");
       writeOutput("All matching grants:");
       for (const decision of result.decisions) {
-        const e = decision.effect.toUpperCase().padEnd(5);
-        const g = decision.grantId.slice(0, 8);
+        const e = escapeControlCharacters(decision.effect.toUpperCase())
+          .padEnd(5);
+        const g = escapeControlCharacters(decision.grantId).slice(0, 8);
         const s = formatSubject(decision.subject);
         const cond = decision.condition
-          ? ` [when: ${decision.condition}]${
+          ? ` [when: ${escapeControlCharacters(decision.condition)}]${
             decision.dependsOn ? " (depends on the run)" : ""
           }`
           : "";

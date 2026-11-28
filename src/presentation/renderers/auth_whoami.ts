@@ -29,6 +29,7 @@ import { UserError } from "../../domain/errors.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { bold, cyan } from "@std/fmt/colors";
 import { collectiveLines } from "./collective_standing.ts";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 
 export interface AuthWhoamiRendererOptions {
   effectiveServeUrl?: string;
@@ -42,21 +43,27 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
       loading_credentials: () => {},
       contacting_server: () => {},
       completed: (e) => {
+        // identity fields come from swamp-club's whoami
+        const serverUrl = esc(e.identity.serverUrl);
         if (e.identity.collectiveToken) {
           writeOutput(
-            `Collective token: ${e.identity.collectiveSlug} on ${e.identity.serverUrl}`,
+            `Collective token: ${
+              esc(e.identity.collectiveSlug ?? "")
+            } on ${serverUrl}`,
           );
           if (e.identity.scopes && e.identity.scopes.length > 0) {
-            writeOutput(`Scopes: ${e.identity.scopes.join(", ")}`);
+            writeOutput(`Scopes: ${e.identity.scopes.map(esc).join(", ")}`);
           }
         } else {
           writeOutput(
-            `${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`,
+            `${esc(e.identity.username)} (${
+              esc(e.identity.email)
+            }) on ${serverUrl}`,
           );
         }
 
         if (e.identity.fingerprint) {
-          writeOutput(`Fingerprint: ${e.identity.fingerprint}`);
+          writeOutput(`Fingerprint: ${esc(e.identity.fingerprint)}`);
         }
 
         if (this.options.effectiveServeUrl) {
@@ -67,7 +74,7 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
         if (entitlements && entitlements.length > 0) {
           const planName = rollUpPlanName(e.identity);
           if (planName) {
-            writeOutput(`${bold(cyan("Plan:"))} ${bold(planName)}`);
+            writeOutput(`${bold(cyan("Plan:"))} ${bold(esc(planName))}`);
           }
           writeOutput(cyan("Collectives:"));
           writeOutput(collectiveLines(entitlements).join("\n"));
@@ -77,7 +84,9 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
         // no entitlement from this server (older or self-hosted): print exactly
         // what shipped before, so upgrading the CLI alone changes nothing
         if (e.identity.collectives && e.identity.collectives.length > 0) {
-          writeOutput(`Collectives: ${e.identity.collectives.join(", ")}`);
+          writeOutput(
+            `Collectives: ${e.identity.collectives.map(esc).join(", ")}`,
+          );
         }
       },
       error: (e) => {

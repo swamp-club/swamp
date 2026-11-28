@@ -26,6 +26,7 @@ import type { Verbosity } from "../../cli/context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { Table } from "@cliffy/table";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 class LogNamespaceListRenderer implements Renderer<NamespaceListEvent> {
   readonly #verbosity: Verbosity;
@@ -57,9 +58,11 @@ class LogNamespaceListRenderer implements Renderer<NamespaceListEvent> {
           )
           .body(
             namespaces.map((ns) => [
-              ns.namespace,
-              ns.repoId || "-",
-              ns.registeredAt ? ns.registeredAt.slice(0, 10) : "-",
+              escapeControlCharacters(ns.namespace),
+              ns.repoId ? escapeControlCharacters(ns.repoId) : "-",
+              ns.registeredAt
+                ? escapeControlCharacters(ns.registeredAt.slice(0, 10))
+                : "-",
               ns.isCurrent ? green("*") : "",
             ]),
           )

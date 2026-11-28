@@ -24,6 +24,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 class LogWorkflowCreateRenderer implements Renderer<WorkflowCreateEvent> {
   handlers(): EventHandlers<WorkflowCreateEvent> {
@@ -32,8 +33,10 @@ class LogWorkflowCreateRenderer implements Renderer<WorkflowCreateEvent> {
       completed: (e) => {
         const data = e.data;
         const lines = [
-          `${bold(cyan("Created:"))} ${bold(data.name)}`,
-          `${bold(cyan("Path:"))} ${data.path}`,
+          `${bold(cyan("Created:"))} ${
+            bold(escapeControlCharacters(data.name))
+          }`,
+          `${bold(cyan("Path:"))} ${escapeControlCharacters(data.path)}`,
         ];
 
         if (data.jobs && data.jobs.length > 0) {
@@ -41,15 +44,17 @@ class LogWorkflowCreateRenderer implements Renderer<WorkflowCreateEvent> {
           lines.push(bold(cyan("Jobs:")));
           for (const job of data.jobs) {
             lines.push(
-              `  ${bold(cyan(job.name))} ${dim("-")} ${job.description}`,
+              `  ${bold(cyan(escapeControlCharacters(job.name)))} ${dim("-")} ${
+                escapeControlCharacters(job.description)
+              }`,
             );
             if (job.steps && job.steps.length > 0) {
               lines.push(`    ${cyan("Steps:")}`);
               for (const step of job.steps) {
                 lines.push(
-                  `      ${bold(step.name)} ${dim(`(${step.taskType})`)} ${
-                    dim("-")
-                  } ${step.description}`,
+                  `      ${bold(escapeControlCharacters(step.name))} ${
+                    dim(`(${escapeControlCharacters(step.taskType)})`)
+                  } ${dim("-")} ${escapeControlCharacters(step.description)}`,
                 );
               }
             }

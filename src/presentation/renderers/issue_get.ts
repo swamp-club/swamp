@@ -25,6 +25,7 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { bold, cyan, dim } from "@std/fmt/colors";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 
 class LogIssueGetRenderer implements Renderer<IssueGetEvent> {
   #verbose: boolean;
@@ -38,14 +39,17 @@ class LogIssueGetRenderer implements Renderer<IssueGetEvent> {
     return {
       completed: (e) => {
         const d = e.data;
-        writeOutput(`${bold(cyan(`#${d.number}`))} ${d.title}`);
+        // issue fields come from swamp-club
+        writeOutput(`${bold(cyan(`#${d.number}`))} ${esc(d.title)}`);
         writeOutput(
-          `${bold("Type:")} ${d.type}  ${bold("Status:")} ${d.status}  ${
-            bold("Author:")
-          } ${d.author}`,
+          `${bold("Type:")} ${esc(d.type)}  ${bold("Status:")} ${
+            esc(d.status)
+          }  ${bold("Author:")} ${esc(d.author)}`,
         );
         if (d.assignees.length > 0) {
-          writeOutput(`${bold("Assignees:")} ${d.assignees.join(", ")}`);
+          writeOutput(
+            `${bold("Assignees:")} ${d.assignees.map(esc).join(", ")}`,
+          );
         }
         writeOutput(`${bold("Comments:")} ${d.commentCount}`);
         if (d.body.length > 0) {
@@ -56,8 +60,8 @@ class LogIssueGetRenderer implements Renderer<IssueGetEvent> {
           writeOutput("");
           writeOutput(bold("── Ripples ─────────────────────────────"));
           for (const c of d.comments) {
-            const ts = c.createdAt ? dim(` ${c.createdAt}`) : "";
-            writeOutput(`${bold(c.author)}${ts}`);
+            const ts = c.createdAt ? dim(` ${esc(c.createdAt)}`) : "";
+            writeOutput(`${bold(esc(c.author))}${ts}`);
             if (c.body.length > 0) {
               writeOutput(renderMarkdownToTerminal(c.body));
             }
@@ -65,7 +69,7 @@ class LogIssueGetRenderer implements Renderer<IssueGetEvent> {
           }
         }
         writeOutput("");
-        writeOutput(dim(`View at: ${d.url}`));
+        writeOutput(dim(`View at: ${esc(d.url)}`));
       },
       error: (e) => {
         throw new UserError(e.error.message);

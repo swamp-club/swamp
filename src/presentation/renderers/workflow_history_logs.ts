@@ -22,6 +22,10 @@ import type { WorkflowHistoryLogsEvent } from "../../libswamp/workflows/history_
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 class LogWorkflowHistoryLogsRenderer
   implements Renderer<WorkflowHistoryLogsEvent> {
@@ -32,20 +36,22 @@ class LogWorkflowHistoryLogsRenderer
         switch (e.data.type) {
           case "log":
             for (const line of e.data.log.lines) {
-              console.log(line);
+              console.log(escapeControlCharactersInText(line));
             }
             break;
           case "no_log_file":
             console.log(
               `No log file recorded for run ${
-                e.data.info.runId.slice(0, 8)
+                escapeControlCharacters(e.data.info.runId.slice(0, 8))
               }. ` +
                 `This run predates log file tracking.`,
             );
             break;
           case "empty_log":
             console.log(
-              `Log file not found or empty: ${e.data.info.path}`,
+              `Log file not found or empty: ${
+                escapeControlCharacters(e.data.info.path)
+              }`,
             );
             break;
         }
