@@ -29,6 +29,7 @@ import type {
   DeclaredGarbageBatchOptions,
   DeclaredGarbageBatchResult,
   DeferredWriteReceipt,
+  FinalizeVersionOptions,
   FindAllForTypeOptions,
   FindAllGlobalOptions,
   FindVersionsCreatedBeforeOptions,
@@ -159,7 +160,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       contentPath: string;
       priorVersions: number[];
       durable?: boolean;
-      syncContent?: (file: Deno.FsFile) => Promise<void>;
+      syncContent?: (file: Deno.FsFile, temp?: string) => Promise<void>;
     }
   > {
     await this.assertKindAcrossStores(type, modelId, data);
@@ -183,8 +184,8 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     version: number,
     priorVersions?: number[],
-    options?: { contentSynced?: boolean },
-  ): Promise<{ size: number; checksum: string }> {
+    options?: FinalizeVersionOptions,
+  ): Promise<{ size: number; checksum: string; sha256?: string }> {
     return this.routeWrite(data).finalizeVersion(
       type,
       modelId,
@@ -650,7 +651,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     version: number,
     priorVersions?: number[],
-    options?: { contentSynced?: boolean },
+    options?: FinalizeVersionOptions,
   ): Promise<
     { receipt: DeferredWriteReceipt; size: number; checksum: string }
   > {

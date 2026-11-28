@@ -100,6 +100,16 @@ export interface GarbageCollectionResult {
   bytesReclaimed: number;
 }
 
+export interface FinalizeVersionOptions {
+  /**
+   * the caller synced content on the handle that wrote it; otherwise a durable
+   * repository syncs it before publishing the version
+   */
+  readonly contentSynced?: boolean;
+  /** what the caller counted and hashed as it wrote, so the content is not read back */
+  readonly written?: { readonly size: number; readonly checksum: string };
+}
+
 export interface DeferredWriteReceipt {
   readonly type: ModelType;
   readonly modelId: string;
@@ -305,7 +315,8 @@ export interface UnifiedDataRepository {
   /**
    * deferred registers the version as pending before any content is written;
    * durable means content written through the caller's own handle is synced on
-   * it before finalizing, via syncContent when set
+   * it before finalizing, via syncContent when set, naming the temp file the
+   * handle wrote when it is not contentPath
    */
   allocateVersion(
     type: ModelType,
@@ -318,13 +329,12 @@ export interface UnifiedDataRepository {
       contentPath: string;
       priorVersions: number[];
       durable?: boolean;
-      syncContent?: (file: Deno.FsFile) => Promise<void>;
+      syncContent?: (file: Deno.FsFile, temp?: string) => Promise<void>;
     }
   >;
 
   /**
-   * contentSynced means the caller synced content on the handle that wrote it;
-   * otherwise a durable repository syncs it before publishing the version
+   * sha256 is set where save would report its checksum
    */
   finalizeVersion(
     type: ModelType,
@@ -332,8 +342,8 @@ export interface UnifiedDataRepository {
     data: Data,
     version: number,
     priorVersions?: number[],
-    options?: { contentSynced?: boolean },
-  ): Promise<{ size: number; checksum: string }>;
+    options?: FinalizeVersionOptions,
+  ): Promise<{ size: number; checksum: string; sha256?: string }>;
 
   /**
    * inserts a catalog row with both latest flags 0, so the data is invisible to
@@ -352,7 +362,7 @@ export interface UnifiedDataRepository {
     data: Data,
     version: number,
     priorVersions?: number[],
-    options?: { contentSynced?: boolean },
+    options?: FinalizeVersionOptions,
   ): Promise<{ receipt: DeferredWriteReceipt; size: number; checksum: string }>;
 
   /**

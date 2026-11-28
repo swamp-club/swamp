@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { createHash } from "node:crypto";
+import { dirname, join } from "@std/path";
 import { z } from "zod";
 import { getLogger } from "@logtape/logtape";
 import {
@@ -95,6 +97,10 @@ import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 const logger = getLogger(["swamp", "data-writer"]);
 const resourceSizeLogger = getLogger(["swamp", "data", "resource-size"]);
 
+type AllocatedVersion = Awaited<
+  ReturnType<UnifiedDataRepository["allocateVersion"]>
+>;
+
 export class DefaultDataWriter implements DataWriter {
   readonly dataId: DataId;
   readonly name: string;
@@ -105,15 +111,7 @@ export class DefaultDataWriter implements DataWriter {
   private readonly options: ResolvedDataWriterOptions;
   private readonly callbacks: DataWriterCallbacks;
 
-  private allocated:
-    | {
-      version: number;
-      contentPath: string;
-      priorVersions: number[];
-      durable?: boolean;
-      syncContent?: (file: Deno.FsFile) => Promise<void>;
-    }
-    | null = null;
+  private allocated: AllocatedVersion | null = null;
   /**
    * whether writeStream synced the content on its own handle, so finalize need
    * not have the repository sync it
@@ -251,72 +249,128 @@ export class DefaultDataWriter implements DataWriter {
 
     const data = this.createDataEntity();
     this.data = data;
-    this.allocated = await this.repo.allocateVersion(
+    const allocated = await this.repo.allocateVersion(
       this.modelType,
       this.modelId,
       data,
       { deferred: this.deferred },
     );
-
-    const file = await Deno.open(this.allocated.contentPath, {
-      write: true,
-      create: true,
-      truncate: true,
-    });
+    this.allocated = allocated;
 
     try {
-      const reader = stream.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const written = await this.streamContent(
+        allocated,
+        stream,
+        options?.onLine,
+      );
+      return await this.finalizeAllocated(written);
+    } catch (error) {
+      await this.rollBackAllocated(allocated.version);
+      throw error;
+    }
+  }
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+  /**
+   * written to a temp file renamed over contentPath once whole, as readers take
+   * a short content file for one still to hydrate; hashed and counted as it goes
+   */
+  private async streamContent(
+    allocated: AllocatedVersion,
+    stream: ReadableStream<Uint8Array>,
+    onLine: ((line: string) => void) | undefined,
+  ): Promise<{ size: number; checksum: string }> {
+    const { contentPath } = allocated;
+    const tempPath = join(dirname(contentPath), `.${crypto.randomUUID()}.tmp`);
+    const hash = createHash("sha256");
+    let size = 0;
+    try {
+      const file = await Deno.open(tempPath, { write: true, createNew: true });
+      try {
+        const reader = stream.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
 
-        await file.write(value);
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        if (options?.onLine || this.callbacks.onLine) {
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-
-          for (let i = 0; i < lines.length - 1; i++) {
-            const line = lines[i];
-            options?.onLine?.(line);
-            this.callbacks.onLine?.(this.name, line);
+          hash.update(value);
+          size += value.byteLength;
+          let flushed = 0;
+          while (flushed < value.byteLength) {
+            flushed += await file.write(value.subarray(flushed));
           }
 
-          buffer = lines[lines.length - 1];
-        }
-      }
+          if (onLine || this.callbacks.onLine) {
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
 
-      if (buffer && (options?.onLine || this.callbacks.onLine)) {
-        options?.onLine?.(buffer);
-        this.callbacks.onLine?.(this.name, buffer);
-      }
+            for (let i = 0; i < lines.length - 1; i++) {
+              const line = lines[i];
+              onLine?.(line);
+              this.callbacks.onLine?.(this.name, line);
+            }
 
-      // sync on the writing handle through the repository policy, as Linux
-      // reports a write-back error only to handles open at the time; outside
-      // finally so a sync error never hides a stream error
-      if (this.allocated.durable) {
-        try {
-          await (this.allocated.syncContent ?? ((f) => f.sync()))(file);
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          throw markErrorPaths(
-            new Error(
-              `Could not sync ${this.allocated.contentPath} to disk: ${reason}.`,
-              { cause: error },
-            ),
-            [this.allocated.contentPath],
-          );
+            buffer = lines[lines.length - 1];
+          }
         }
-        this.contentSynced = true;
+
+        if (buffer && (onLine || this.callbacks.onLine)) {
+          onLine?.(buffer);
+          this.callbacks.onLine?.(this.name, buffer);
+        }
+
+        // sync on the writing handle through the repository policy, as Linux
+        // reports a write-back error only to handles open at the time; outside
+        // finally so a sync error never hides a stream error
+        if (allocated.durable) {
+          try {
+            await (allocated.syncContent ?? ((f) => f.sync()))(file, tempPath);
+          } catch (error) {
+            const reason = error instanceof Error
+              ? error.message
+              : String(error);
+            throw markErrorPaths(
+              new Error(
+                `Could not sync ${contentPath} to disk: ${reason}.`,
+                { cause: error },
+              ),
+              [contentPath],
+            );
+          }
+          this.contentSynced = true;
+        }
+      } finally {
+        file.close();
       }
-    } finally {
-      file.close();
+      await Deno.rename(tempPath, contentPath);
+    } catch (error) {
+      await Deno.remove(tempPath).catch(() => {});
+      throw error;
     }
+    return { size, checksum: hash.digest("hex") };
+  }
 
-    return this.finalize();
+  /**
+   * a failed streamed save leaves no version; a rollback error is logged so
+   * the save's own error reaches the caller
+   */
+  private async rollBackAllocated(version: number): Promise<void> {
+    try {
+      await this.repo.rollbackVersions([{
+        type: this.modelType,
+        modelId: this.modelId,
+        dataName: this.name,
+        version,
+      }]);
+    } catch (rollbackError) {
+      logger
+        .warn`Rolling back ${this.name} v${version} after its write failed failed: ${rollbackError}`;
+      return;
+    }
+    this.allocated = null;
+    this.data = null;
+    this.contentSynced = false;
   }
 
   async getFilePath(): Promise<string> {
@@ -337,7 +391,13 @@ export class DefaultDataWriter implements DataWriter {
     return this.allocated.contentPath;
   }
 
-  async finalize(): Promise<DataHandle> {
+  finalize(): Promise<DataHandle> {
+    return this.finalizeAllocated(undefined);
+  }
+
+  private async finalizeAllocated(
+    written: { size: number; checksum: string } | undefined,
+  ): Promise<DataHandle> {
     this.ensureNotFinalized();
 
     if (!this.allocated || !this.data) {
@@ -353,24 +413,29 @@ export class DefaultDataWriter implements DataWriter {
         this.data,
         this.allocated.version,
         this.allocated.priorVersions,
-        { contentSynced: this.contentSynced },
+        { contentSynced: this.contentSynced, ...(written ? { written } : {}) },
       );
       this.deferredReceipt = receipt;
       this.finalized = true;
       return this.buildHandle(this.allocated.version, size);
     }
 
-    const { size, checksum: _checksum } = await this.repo.finalizeVersion(
+    const { size, sha256 } = await this.repo.finalizeVersion(
       this.modelType,
       this.modelId,
       this.data,
       this.allocated.version,
       this.allocated.priorVersions,
-      { contentSynced: this.contentSynced },
+      { contentSynced: this.contentSynced, ...(written ? { written } : {}) },
     );
 
     this.finalized = true;
-    return this.buildHandle(this.allocated.version, size);
+    // as writeAll reports it: only what was hashed as it was written
+    return this.buildHandle(
+      this.allocated.version,
+      size,
+      written ? sha256 : undefined,
+    );
   }
 
   private get ownerDefinition(): OwnerDefinition {
