@@ -23,7 +23,14 @@ import { parse as parseYaml } from "@std/yaml";
 import { type DataId, generateDataId } from "../../domain/data/data_id.ts";
 import type { OpJSON } from "../../domain/datastore_v3/op.ts";
 import { MemoryStorage } from "../../domain/datastore_v3/v3_test_helpers.ts";
-import { createFileWriterFactory } from "../../domain/models/data_writer.ts";
+import { z } from "zod";
+import { ResourceSizePolicy } from "../../domain/data/resource_size_policy.ts";
+import {
+  createFileWriterFactory,
+  createResourceWriter,
+} from "../../domain/models/data_writer.ts";
+import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
+import { STREAMING_JSON_SLICE_UNITS } from "../../domain/models/streaming_json.ts";
 import type { DataHandle } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
@@ -165,16 +172,20 @@ function contentOf(lines: number): Uint8Array {
 /** a version's metadata without the time it was written */
 async function metadataOf(
   repo: FileSystemUnifiedDataRepository,
+  name = "log",
 ): Promise<Record<string, unknown>> {
   const metadata = parseYaml(
-    await Deno.readTextFile(repo.getMetadataPath(TYPE, MODEL_ID, "log", 1)),
+    await Deno.readTextFile(repo.getMetadataPath(TYPE, MODEL_ID, name, 1)),
   ) as Record<string, unknown>;
   delete metadata.createdAt;
   return metadata;
 }
 
-function catalogRowOf(catalog: CatalogStore): Record<string, unknown> {
-  const row = catalog.findLatestRow(MODEL_NAME, "log");
+function catalogRowOf(
+  catalog: CatalogStore,
+  name = "log",
+): Record<string, unknown> {
+  const row = catalog.findLatestRow(MODEL_NAME, name);
   assert(row !== null, "the version has a latest catalog row");
   const { created_at: _createdAt, ...rest } = row;
   return rest;
@@ -214,9 +225,10 @@ async function inV3Unit(fn: () => Promise<void>): Promise<OpJSON[]> {
 async function assertNoVersionLeft(
   repo: FileSystemUnifiedDataRepository,
   catalog: CatalogStore,
+  name = "log",
 ): Promise<void> {
-  assertEquals(await repo.listVersions(TYPE, MODEL_ID, "log"), []);
-  assertEquals(catalog.findLatestRow(MODEL_NAME, "log"), null);
+  assertEquals(await repo.listVersions(TYPE, MODEL_ID, name), []);
+  assertEquals(catalog.findLatestRow(MODEL_NAME, name), null);
   assertEquals(
     catalog.pendingRows(repo.namespace, TYPE.normalized, MODEL_ID),
     [],
@@ -224,7 +236,7 @@ async function assertNoVersionLeft(
   const left: string[] = [];
   try {
     for await (
-      const entry of Deno.readDir(repo.getDataNameDir(TYPE, MODEL_ID, "log"))
+      const entry of Deno.readDir(repo.getDataNameDir(TYPE, MODEL_ID, name))
     ) {
       left.push(entry.name);
     }
@@ -323,6 +335,130 @@ for (const deferred of [false, true]) {
       );
       await assertNoVersionLeft(repo, catalog);
       assertEquals(factory.getDeferredReceipts(), []);
+    });
+  });
+}
+
+const RESOURCES = {
+  result: {
+    schema: z.object({ stdout: z.string(), exitCode: z.number() }),
+    lifetime: "infinite" as const,
+    garbageCollection: 10,
+  },
+};
+
+// past the length at which a string is escaped a slice at a time
+const LONG_STDOUT = 'line é中😀 "q"\n'.repeat(STREAMING_JSON_SLICE_UNITS / 8);
+
+/** a secret absent from the data sends the write down the whole path */
+function resourceWriterOf(
+  repo: FileSystemUnifiedDataRepository,
+  deferred: boolean,
+  options: { whole?: boolean; id?: DataId; maxBytes?: number } = {},
+) {
+  if (options.id !== undefined) {
+    const id = options.id;
+    repo.nextId = () => id;
+  }
+  let redactor: SecretRedactor | undefined;
+  if (options.whole) {
+    redactor = new SecretRedactor();
+    redactor.addSecret("absent-secret-value");
+  }
+  return createResourceWriter(
+    repo,
+    TYPE,
+    MODEL_ID,
+    RESOURCES,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    MODEL_NAME,
+    undefined,
+    "run",
+    undefined,
+    redactor,
+    deferred,
+    Deno.build.os,
+    undefined,
+    undefined,
+    options.maxBytes === undefined
+      ? ResourceSizePolicy.DEFAULT
+      : ResourceSizePolicy.create({ warnBytes: 1, maxBytes: options.maxBytes }),
+  );
+}
+
+for (const deferred of [false, true]) {
+  const mode = deferred ? "deferred" : "immediate";
+
+  Deno.test(`createResourceWriter (${mode}): a streamed resource stores what the whole path stores, with the same handle, checksum, metadata, catalog row and staged ops`, async () => {
+    await withCheckouts(async (whole, streamed) => {
+      const data = { stdout: LONG_STDOUT, exitCode: 0 };
+      const id = generateDataId();
+      let wholeHandle: DataHandle | undefined;
+      let streamedHandle: DataHandle | undefined;
+
+      const wholeOps = await inV3Unit(async () => {
+        const writer = resourceWriterOf(whole.repo, deferred, {
+          whole: true,
+          id,
+        });
+        wholeHandle = await writer.writeResource("result", "result", data);
+        if (deferred) {
+          await whole.repo.advanceLatestMarkers(writer.getDeferredReceipts());
+        }
+      });
+      const streamedOps = await inV3Unit(async () => {
+        const writer = resourceWriterOf(streamed.repo, deferred, { id });
+        streamedHandle = await writer.writeResource("result", "result", data);
+        if (deferred) {
+          await streamed.repo.advanceLatestMarkers(
+            writer.getDeferredReceipts(),
+          );
+        }
+      });
+
+      assertEquals(streamedHandle, wholeHandle);
+      assertEquals(
+        streamedHandle?.sha256 !== undefined,
+        !deferred,
+        "the handle carries a checksum where writeAll's does",
+      );
+      assertEquals(
+        await Deno.readFile(
+          streamed.repo.getContentPath(TYPE, MODEL_ID, "result", 1),
+        ),
+        new TextEncoder().encode(JSON.stringify(data)),
+      );
+      assertEquals(streamed.repo.contentReads, 0, "never read back");
+      assertEquals(
+        await metadataOf(streamed.repo, "result"),
+        await metadataOf(whole.repo, "result"),
+      );
+      assertEquals(
+        catalogRowOf(streamed.catalog, "result"),
+        catalogRowOf(whole.catalog, "result"),
+      );
+      assert(wholeOps.length > 0, "the save staged its version");
+      assertEquals(stagedOf(streamedOps), stagedOf(wholeOps));
+    });
+  });
+
+  Deno.test(`createResourceWriter (${mode}): a streamed resource past maxBytes leaves no version, catalog row or file`, async () => {
+    await withCheckouts(async ({ repo, catalog }) => {
+      const writer = resourceWriterOf(repo, deferred, { maxBytes: 1024 });
+      await assertRejects(
+        () =>
+          writer.writeResource("result", "result", {
+            stdout: LONG_STDOUT,
+            exitCode: 0,
+          }),
+        Error,
+        "maxBytes",
+      );
+      await assertNoVersionLeft(repo, catalog, "result");
+      assertEquals(writer.getDeferredReceipts(), []);
     });
   });
 }

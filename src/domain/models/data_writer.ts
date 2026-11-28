@@ -92,6 +92,7 @@ import {
   ResourceTooLargeError,
 } from "../data/resource_size_policy.ts";
 import { resourceLoadGuardOf } from "../data/resource_load_guard.ts";
+import { StreamingJson } from "./streaming_json.ts";
 import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 
 const logger = getLogger(["swamp", "data-writer"]);
@@ -1466,33 +1467,45 @@ export function createResourceWriter(
       sensitiveVaultReferences(value, sensitiveFields)
         .map((ref) => JSON.stringify([ref.vaultName, ref.key])).sort();
     const generatedReferences = referenceIds(data);
-    const serialized = redactor?.hasSecrets
-      ? redactOutsideVaultReferences(
-        data,
-        vaultedPaths,
-        redactor,
-        effectiveSpec.sensitiveOutput === true,
-      )
-      : JSON.stringify(data);
-    if (vaultedPaths.length > 0) {
-      // redaction keeps the payload valid JSON
-      const persisted: unknown = JSON.parse(serialized);
-      if (
-        persisted === null || typeof persisted !== "object" ||
-        Array.isArray(persisted) ||
-        JSON.stringify(referenceIds(persisted as Record<string, unknown>)) !==
-          JSON.stringify(generatedReferences)
-      ) {
-        throw new Error(
-          "Cannot persist sensitive data: serialization or redaction changed the generated vault references.",
-        );
+    // the whole path redacts and checks references on the whole text; anything
+    // else streams, so a large resource is never held as JSON text and bytes
+    let encoded: Uint8Array | undefined;
+    let json: StreamingJson | undefined;
+    if (redactor?.hasSecrets || vaultedPaths.length > 0) {
+      const serialized = redactor?.hasSecrets
+        ? redactOutsideVaultReferences(
+          data,
+          vaultedPaths,
+          redactor,
+          effectiveSpec.sensitiveOutput === true,
+        )
+        : JSON.stringify(data);
+      if (vaultedPaths.length > 0) {
+        // redaction keeps the payload valid JSON
+        const persisted: unknown = JSON.parse(serialized);
+        if (
+          persisted === null || typeof persisted !== "object" ||
+          Array.isArray(persisted) ||
+          JSON.stringify(
+              referenceIds(persisted as Record<string, unknown>),
+            ) !==
+            JSON.stringify(generatedReferences)
+        ) {
+          throw new Error(
+            "Cannot persist sensitive data: serialization or redaction changed the generated vault references.",
+          );
+        }
+        resolvedTags[SENSITIVE_FIELDS_VERSION_TAG] = SENSITIVE_FIELDS_VERSION;
       }
-      resolvedTags[SENSITIVE_FIELDS_VERSION_TAG] = SENSITIVE_FIELDS_VERSION;
+      encoded = new TextEncoder().encode(serialized);
+    } else {
+      json = StreamingJson.resolve(data);
+      if (!json.streams) encoded = json.bytes();
     }
+    const byteLength = encoded?.length ?? json!.byteLength();
 
-    const encoded = new TextEncoder().encode(serialized);
     const policy = await effectiveSizePolicy();
-    const verdict = policy.classify(encoded.length);
+    const verdict = policy.classify(byteLength);
     if (verdict !== "ok") {
       const written = {
         modelType: modelType.normalized,
@@ -1504,7 +1517,7 @@ export function createResourceWriter(
       if (verdict === "refuse") {
         throw new ResourceTooLargeError(
           written,
-          encoded.length,
+          byteLength,
           policy.maxBytes!,
         );
       }
@@ -1513,7 +1526,7 @@ export function createResourceWriter(
         sizeWarned.add(warnKey);
         resourceSizeLogger.warn(escapeLogTemplate(
           `${describeWrittenResource(written)} is ${
-            describeByteCount(encoded.length)
+            describeByteCount(byteLength)
           }, past the ${
             describeByteCount(policy.warnBytes)
           } warning threshold; runs that load many resources this large together can run out of memory. ` +
@@ -1560,7 +1573,9 @@ export function createResourceWriter(
       deferred,
     );
 
-    const handle = await writer.writeAll(encoded);
+    const handle = encoded
+      ? await writer.writeAll(encoded)
+      : await writer.writeStream(ReadableStream.from(json!.chunks()));
     if (!attributeBudget || attributeBudget.admit(handle.size)) {
       handle.attributes = { ...data };
     } else if (!attributesOmittedLogged) {

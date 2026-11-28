@@ -59,6 +59,7 @@ import {
   sensitiveVaultReferences,
   stampedTagWarningsOnce,
 } from "./data_writer.ts";
+import { STREAMING_JSON_SLICE_UNITS } from "./streaming_json.ts";
 import { ModelType } from "./model_type.ts";
 import { ResourceAttributeBudget } from "./resource_attribute_budget.ts";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
@@ -6924,5 +6925,181 @@ Deno.test("stampedTagWarningsOnce: a method's resource and file writers report o
   assertEquals(
     events.filter((e) => e.type === "data_name_portability_warning").length,
     1,
+  );
+});
+
+// past the length at which a string is escaped a slice at a time
+const STREAMED_VALUE = 'é😀"\n'.repeat(STREAMING_JSON_SLICE_UNITS / 4 + 7);
+
+async function withStreamingRepo(
+  policy: ResourceSizePolicy,
+  fn: (
+    repo: UnifiedDataRepository & {
+      saves: Uint8Array[];
+      streamed: string[];
+    },
+  ) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-streamed-resource-" });
+  try {
+    const repo = {
+      ...createMockRepo(),
+      saves: [] as Uint8Array[],
+      streamed: [] as string[],
+      resolveResourceSizePolicy: () => Promise.resolve(policy),
+    };
+    repo.save = (_type, _modelId, _data, content) => {
+      repo.saves.push(content);
+      return Promise.resolve({ version: 1 });
+    };
+    repo.allocateVersion = () => {
+      const contentPath = join(dir, `content-${repo.streamed.length}`);
+      repo.streamed.push(contentPath);
+      return Promise.resolve({ version: 1, contentPath, priorVersions: [] });
+    };
+    repo.finalizeVersion = (...args) =>
+      Promise.resolve({
+        size: args[5]?.written?.size ?? 0,
+        checksum: args[5]?.written?.checksum ?? "",
+      });
+    await fn(repo);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+const streamedResources: Record<string, ResourceOutputSpec> = {
+  item: {
+    schema: z.object({ value: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+  creds: {
+    schema: z.object({
+      secret: z.string().meta({ sensitive: true }),
+      value: z.string(),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+};
+
+function streamedWriter(
+  repo: UnifiedDataRepository,
+  options: { redactor?: SecretRedactor; vaultService?: VaultService } = {},
+) {
+  return createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    streamedResources,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "big",
+    options.vaultService,
+    "write",
+    undefined,
+    options.redactor,
+    false,
+    Deno.build.os,
+    undefined,
+    undefined,
+    repoResourceSizePolicy(repo),
+  );
+}
+
+/** a secret absent from the data, so the whole path writes what streaming would */
+function absentSecretRedactor(): SecretRedactor {
+  const redactor = new SecretRedactor();
+  redactor.addSecret("absent-secret-value");
+  return redactor;
+}
+
+Deno.test("createResourceWriter: a resource with a long string streams its exact JSON bytes through writeStream, never whole through save", async () => {
+  await withStreamingRepo(ResourceSizePolicy.DEFAULT, async (repo) => {
+    const data = { value: STREAMED_VALUE };
+    const handle = await streamedWriter(repo).writeResource(
+      "item",
+      "blob",
+      data,
+    );
+    const expected = new TextEncoder().encode(JSON.stringify(data));
+    assertEquals(repo.saves.length, 0);
+    assertEquals(repo.streamed.length, 1);
+    assertEquals(await Deno.readFile(repo.streamed[0]), expected);
+    assertEquals(handle.size, expected.length);
+    assertEquals(handle.attributes, data);
+  });
+});
+
+Deno.test("createResourceWriter: registered secrets or vaulted fields keep the whole path, so redaction and reference checks see the whole text", async () => {
+  await withStreamingRepo(ResourceSizePolicy.DEFAULT, async (repo) => {
+    await streamedWriter(repo, { redactor: absentSecretRedactor() })
+      .writeResource("item", "redacted", { value: STREAMED_VALUE });
+    await streamedWriter(repo, { vaultService: createTestVaultService() })
+      .writeResource("creds", "vaulted", {
+        secret: "s3cr3t",
+        value: STREAMED_VALUE,
+      });
+    assertEquals(repo.streamed.length, 0);
+    assertEquals(repo.saves.length, 2);
+    assertEquals(
+      repo.saves[0],
+      new TextEncoder().encode(JSON.stringify({ value: STREAMED_VALUE })),
+    );
+    assert(!new TextDecoder().decode(repo.saves[1]).includes("s3cr3t"));
+  });
+});
+
+Deno.test("createResourceWriter: a streamed resource past maxBytes is refused as the whole path refuses it, before any version is allocated", async () => {
+  await withStreamingRepo(
+    ResourceSizePolicy.create({ warnBytes: 50, maxBytes: 100 }),
+    async (repo) => {
+      const data = { value: STREAMED_VALUE };
+      const streamed = await assertRejects(
+        () => streamedWriter(repo).writeResource("item", "blob", data),
+        ResourceTooLargeError,
+      );
+      const whole = await assertRejects(
+        () =>
+          streamedWriter(repo, { redactor: absentSecretRedactor() })
+            .writeResource("item", "blob", data),
+        ResourceTooLargeError,
+      );
+      assertEquals(
+        streamed.bytes,
+        new TextEncoder().encode(JSON.stringify(data)).length,
+      );
+      assertEquals(streamed.message, whole.message);
+      assertEquals(streamed.bytes, whole.bytes);
+      assertEquals(repo.streamed.length, 0);
+      assertEquals(repo.saves.length, 0);
+    },
+  );
+});
+
+Deno.test("createResourceWriter: a streamed resource past warnBytes warns as the whole path warns", async () => {
+  await withStreamingRepo(
+    ResourceSizePolicy.create({ warnBytes: 100 }),
+    async (repo) => {
+      const data = { value: STREAMED_VALUE };
+      const streamed = await capturingResourceSizeWarnings(async () => {
+        await streamedWriter(repo).writeResource("item", "blob", data);
+      });
+      const whole = await capturingResourceSizeWarnings(async () => {
+        await streamedWriter(repo, { redactor: absentSecretRedactor() })
+          .writeResource("item", "blob", data);
+      });
+      assertEquals(repo.streamed.length, 1);
+      assertEquals(repo.saves.length, 1);
+      assertEquals(streamed.length, 1);
+      assertEquals(streamed, whole);
+    },
   );
 });
