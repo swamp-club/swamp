@@ -91,10 +91,13 @@ export const MAX_RELEASE_CARRIED_BYTES = 1024 * 1024;
 export const MAX_CARRIED_CHUNKS = 1024;
 
 /**
- * chunk bytes one commit sent alone carries in its request; the rest go
- * ahead one at a time, so a large output is never held whole
+ * chunk bytes one commit sent alone carries in its request, four chunks as
+ * serve stores four at once; the rest go ahead, so a large output is never held whole
  */
-export const MAX_INLINE_CARRIED_BYTES = 32 * 1024 * 1024;
+export const MAX_INLINE_CARRIED_BYTES = 64 * 1024 * 1024;
+
+/** chunks put ahead at once, so a slow bucket still takes them in parallel */
+export const PUT_AHEAD_CONCURRENCY = 4;
 
 /**
  * how many times one process uploads a commit's chunks that serve answers
@@ -260,11 +263,17 @@ export function createServeCommitSink(
       ? { error: failures.error }
       : undefined;
   };
+  // a put's failure reaches the caller's count too: each failure counts once
+  const countedFailures = new WeakSet<object>();
   const noteCarriedFailure = (
     commit: Commit,
     chunks: readonly CommitChunk[],
     error: unknown,
   ): void => {
+    if (typeof error === "object" && error !== null) {
+      if (countedFailures.has(error)) return;
+      countedFailures.add(error);
+    }
     // only serve failing to store, never a refusal or one that clears on its own
     if (
       chunks.length === 0 || !(error instanceof ServeUpstreamError) ||
@@ -288,7 +297,10 @@ export function createServeCommitSink(
   ): Promise<{ inline: CommitChunk[]; bytes: number }> => {
     const inline: CommitChunk[] = [];
     let bytes = 0;
+    const inFlight = new Set<Promise<void>>();
+    let failed: { chunk: CommitChunk; error: unknown } | undefined;
     for (const sha256 of missing) {
+      if (failed !== undefined) break;
       const [chunk] = await chunksOf(commit, [sha256]);
       if (
         inline.length < MAX_CARRIED_CHUNKS &&
@@ -298,17 +310,28 @@ export function createServeCommitSink(
         bytes += chunk.bytes.byteLength;
         continue;
       }
-      try {
-        await client.putChunk(
-          chunk.sha256,
-          chunk.bytes,
-          signal,
-          commit.partition,
-        );
-      } catch (error) {
-        noteCarriedFailure(commit, [chunk], error);
-        throw error;
+      while (inFlight.size >= PUT_AHEAD_CONCURRENCY) {
+        await Promise.race(inFlight);
       }
+      const put: Promise<void> = client.putChunk(
+        chunk.sha256,
+        chunk.bytes,
+        signal,
+        commit.partition,
+      ).then(
+        () => {},
+        (error: unknown) => {
+          failed ??= { chunk, error };
+        },
+      ).finally(() => {
+        inFlight.delete(put);
+      });
+      inFlight.add(put);
+    }
+    await Promise.all(inFlight);
+    if (failed !== undefined) {
+      noteCarriedFailure(commit, [failed.chunk], failed.error);
+      throw failed.error;
     }
     return { inline, bytes };
   };
