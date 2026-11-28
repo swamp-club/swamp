@@ -1528,6 +1528,31 @@ Compaction levels stay at 0.5.17's defaults (L1 30 s, L2 5 min, L3 1 h). They
 are revisited only if the long-history gate round shows the 1-hour snapshot is
 not enough.
 
+**The interval and team failover.** A follower that takes over from a stopped
+leader restores the lineage before it leads, so the restore sits inside the
+takeover time. On the acceptance team (0.5.17 on GCS, a spread-10 load, the
+leader frozen late in the snapshot cycle, timed from the freeze to "This serve
+node leads the datastore"):
+
+| `snapshotInterval` | database | tail since the snapshot | restore | takeover |
+| --- | --- | --- | --- | --- |
+| `10m` (3 reps, 515-517 s after a snapshot) | 12-25 MB | 333-432 files, 9-20 MB | 19.6-26.7 s | 51.5-58.1 s |
+| `1h` (1 rep, 51 min after a snapshot) | 33 MB | 1,480 files, 32 MB | 86.3 s | at least 102 s |
+
+Detection (15-20 s of feed silence) and the start-up after the restore (4-15 s)
+take the rest. The restore tracks the number of LTX files since the snapshot
+(about 47 ms each) more than their bytes.
+
+A 10-minute interval does not hold that bound as the database grows. Every
+restore also checks the restored copy (`PRAGMA integrity_check`) and installs it
+over the open copy row by row (`replaceContentFrom`). On a 585 MB `commits.db`
+from a 44-hour team store (e2-standard-4, pd-ssd, cold page cache) the check
+took about 41 s and the row copy about 15 s; on a 1.15 GB copy, about 110 s and
+30 s. And each snapshot uploads about half the database size: 144 a day at 10
+minutes is about 1.8 GB a day for a 12 MB snapshot, and about 42 GB a day at
+585 MB, against about 7 GB a day at 1 hour. So `10m` is a recommendation for a
+small team datastore that must fail over within a minute, not a default.
+
 **Tests.** The `integration/datastore_v3_litestream_restore*_test.ts` files,
 sharing `datastore_v3_litestream_restore_helpers.ts`, run real Litestream with
 a file replica, each "machine" a worker with its own module state, host name
