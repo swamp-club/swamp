@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
@@ -74,7 +74,10 @@ import {
 import type { ResourceOutputSpec } from "./model.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import { sensitiveOutputTargetVaults } from "./sensitive_output_vault.ts";
-import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type {
+  FinalizeVersionOptions,
+  UnifiedDataRepository,
+} from "../data/repositories.ts";
 import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import {
   Data,
@@ -6206,12 +6209,12 @@ async function withDurableAllocation(
   durable: boolean | undefined,
   fn: (
     repo: UnifiedDataRepository,
-    finalized: ({ contentSynced?: boolean } | undefined)[],
+    finalized: (FinalizeVersionOptions | undefined)[],
   ) => Promise<void>,
-  syncContent?: (file: Deno.FsFile) => Promise<void>,
+  syncContent?: (file: Deno.FsFile, temp?: string) => Promise<void>,
 ): Promise<void> {
   const tmpFile = await Deno.makeTempFile();
-  const finalized: ({ contentSynced?: boolean } | undefined)[] = [];
+  const finalized: (FinalizeVersionOptions | undefined)[] = [];
   try {
     const repo: UnifiedDataRepository = {
       ...createMockRepo(),
@@ -6256,13 +6259,19 @@ Deno.test("DataWriter.writeStream: on a durable allocation, syncs its own handle
     await createFileWriter("log", "test-log").writeStream(
       streamOf("a\n", "b\n"),
     );
-    assertEquals(finalized, [{ contentSynced: true }]);
+    assertEquals(finalized.map((options) => options?.contentSynced), [true]);
   });
 });
 
 Deno.test("DataWriter.writeStream: syncs through the allocation's syncContent when it has one (swamp-club#4032)", async () => {
-  let synced = 0;
+  const synced: (string | undefined)[] = [];
+  let contentPath = "";
   await withDurableAllocation(true, async (repo, finalized) => {
+    contentPath = (await repo.allocateVersion(
+      modelType,
+      modelId,
+      createMockDataEntity(),
+    )).contentPath;
     const { createFileWriter } = createFileWriterFactory(
       repo,
       modelType,
@@ -6270,12 +6279,14 @@ Deno.test("DataWriter.writeStream: syncs through the allocation's syncContent wh
       testFiles,
     );
     await createFileWriter("log", "test-log").writeStream(streamOf("a\n"));
-    assertEquals(synced, 1);
-    assertEquals(finalized, [{ contentSynced: true }]);
-  }, () => {
-    synced++;
+    assertEquals(finalized.map((options) => options?.contentSynced), [true]);
+  }, (_file, temp) => {
+    synced.push(temp);
     return Promise.resolve();
   });
+  assertEquals(synced.length, 1);
+  assert(synced[0] !== undefined && synced[0] !== contentPath);
+  assertEquals(dirname(synced[0]), dirname(contentPath), "beside the content");
 });
 
 Deno.test("DataWriter.writeStream: a failed syncContent names the content path once", async () => {
@@ -6305,7 +6316,7 @@ Deno.test("DataWriter.writeStream: without a durable allocation, does not claim 
       testFiles,
     );
     await createFileWriter("log", "test-log").writeStream(streamOf("a\n"));
-    assertEquals(finalized, [{ contentSynced: false }]);
+    assertEquals(finalized.map((options) => options?.contentSynced), [false]);
   });
 });
 

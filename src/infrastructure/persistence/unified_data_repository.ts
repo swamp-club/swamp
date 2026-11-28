@@ -96,6 +96,7 @@ import {
   type DeclaredGarbageBatchOptions,
   type DeclaredGarbageBatchResult,
   type DeferredWriteReceipt,
+  type FinalizeVersionOptions,
   type FindAllForTypeOptions,
   type FindAllGlobalOptions,
   type FindVersionsCreatedBeforeOptions,
@@ -2261,7 +2262,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       contentPath: string;
       priorVersions: number[];
       durable?: boolean;
-      syncContent?: (file: Deno.FsFile) => Promise<void>;
+      syncContent?: (file: Deno.FsFile, temp?: string) => Promise<void>;
     }
   > {
     if (isReservedDataName(data.name)) {
@@ -2323,8 +2324,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         priorVersions,
         durable: sync !== undefined,
         ...(syncFile === undefined ? {} : {
-          syncContent: (file: Deno.FsFile) =>
-            syncFile(file, { temp: contentPath, target: contentPath }),
+          syncContent: (file: Deno.FsFile, temp?: string) =>
+            syncFile(file, { temp: temp ?? contentPath, target: contentPath }),
         }),
       };
     });
@@ -2336,8 +2337,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     version: number,
     priorVersions?: number[],
-    options?: { contentSynced?: boolean },
-  ): Promise<{ size: number; checksum: string }> {
+    options?: FinalizeVersionOptions,
+  ): Promise<{ size: number; checksum: string; sha256?: string }> {
     return await this.staged({
       kind: "write",
       path: this.getPath(type, modelId, data.name, version),
@@ -2349,9 +2350,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         version,
       );
 
-      const content = await Deno.readFile(contentPath);
-      const size = content.length;
-      const checksum = await this.computeChecksum(content);
+      const { size, checksum } = options?.written ??
+        await this.measureContent(type, modelId, data.name, version);
       const sync = this.durableSync({
         type,
         modelId,
@@ -2434,8 +2434,40 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         );
       }
 
-      return { size, checksum };
+      return typedStagingActive(this.markDirty)
+        ? { size, checksum, sha256: checksum }
+        : { size, checksum };
     });
+  }
+
+  private async measureContent(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<{ size: number; checksum: string }> {
+    const content = await this.readContentForFinalize(
+      type,
+      modelId,
+      dataName,
+      version,
+    );
+    return {
+      size: content.length,
+      checksum: await this.computeChecksum(content),
+    };
+  }
+
+  /** a seam, so a test can count the reads finalize makes */
+  protected readContentForFinalize(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<Uint8Array> {
+    return Deno.readFile(
+      this.getContentPath(type, modelId, dataName, version),
+    );
   }
 
   async finalizeVersionDeferred(
@@ -2444,7 +2476,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     version: number,
     _priorVersions?: number[],
-    options?: { contentSynced?: boolean },
+    options?: FinalizeVersionOptions,
   ): Promise<
     { receipt: DeferredWriteReceipt; size: number; checksum: string }
   > {
@@ -2458,9 +2490,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         data.name,
         version,
       );
-      const content = await Deno.readFile(contentPath);
-      const size = content.length;
-      const checksum = await this.computeChecksum(content);
+      const { size, checksum } = options?.written ??
+        await this.measureContent(type, modelId, data.name, version);
       const sync = this.durableSync({
         type,
         modelId,
