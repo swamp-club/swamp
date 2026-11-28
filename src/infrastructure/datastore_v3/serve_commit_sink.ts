@@ -79,9 +79,6 @@ import { withSpan } from "../tracing/tracer.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
-/** chunks one batch carries at most; past it each commit goes alone */
-export const MAX_BATCH_CARRIED_BYTES = 64 * 1024 * 1024;
-
 /**
  * chunks a batch that ends the lease may carry: its hold stops renewing for the
  * request, so a larger one keeps renewing and the lease is released after
@@ -91,8 +88,8 @@ export const MAX_RELEASE_CARRIED_BYTES = 1024 * 1024;
 export const MAX_CARRIED_CHUNKS = 1024;
 
 /**
- * chunk bytes one commit sent alone carries in its request, four chunks as
- * serve stores four at once; the rest go ahead, so a large output is never held whole
+ * chunk bytes one request carries, a commit alone or a whole batch, four chunks
+ * as serve stores four at once; the rest go ahead, so a large output is never held whole
  */
 export const MAX_INLINE_CARRIED_BYTES = 64 * 1024 * 1024;
 
@@ -293,36 +290,40 @@ export function createServeCommitSink(
     let bytes = 0;
     const inFlight = new Set<Promise<void>>();
     let failed: { chunk: CommitChunk; error: unknown } | undefined;
-    for (const sha256 of missing) {
-      if (failed !== undefined) break;
-      const [chunk] = await chunksOf(commit, [sha256]);
-      if (
-        inline.length < MAX_CARRIED_CHUNKS &&
-        bytes + chunk.bytes.byteLength <= budgetBytes
-      ) {
-        inline.push(chunk);
-        bytes += chunk.bytes.byteLength;
-        continue;
+    try {
+      for (const sha256 of missing) {
+        if (failed !== undefined) break;
+        const [chunk] = await chunksOf(commit, [sha256]);
+        if (
+          inline.length < MAX_CARRIED_CHUNKS &&
+          bytes + chunk.bytes.byteLength <= budgetBytes
+        ) {
+          inline.push(chunk);
+          bytes += chunk.bytes.byteLength;
+          continue;
+        }
+        while (inFlight.size >= PUT_AHEAD_CONCURRENCY) {
+          await Promise.race(inFlight);
+        }
+        const put: Promise<void> = client.putChunk(
+          chunk.sha256,
+          chunk.bytes,
+          signal,
+          commit.partition,
+        ).then(
+          () => {},
+          (error: unknown) => {
+            failed ??= { chunk, error };
+          },
+        ).finally(() => {
+          inFlight.delete(put);
+        });
+        inFlight.add(put);
       }
-      while (inFlight.size >= PUT_AHEAD_CONCURRENCY) {
-        await Promise.race(inFlight);
-      }
-      const put: Promise<void> = client.putChunk(
-        chunk.sha256,
-        chunk.bytes,
-        signal,
-        commit.partition,
-      ).then(
-        () => {},
-        (error: unknown) => {
-          failed ??= { chunk, error };
-        },
-      ).finally(() => {
-        inFlight.delete(put);
-      });
-      inFlight.add(put);
+    } finally {
+      // a failed cache read must not leave uploads running past this call
+      await Promise.allSettled(inFlight);
     }
-    await Promise.all(inFlight);
     if (failed !== undefined) {
       noteCarriedFailure(commit, [failed.chunk], failed.error);
       throw failed.error;
@@ -639,7 +640,7 @@ export function createServeCommitSink(
       : await client.hasChunks(all, signal);
     const framed: CommitChunk[][] = [];
     // one budget for the whole batch, so it never loads more than it sends
-    let left = MAX_BATCH_CARRIED_BYTES;
+    let left = MAX_INLINE_CARRIED_BYTES;
     for (const [index, commit] of commits.entries()) {
       const missing = refsOf[index].filter((hash) => !held.has(hash));
       const { inline, bytes } = await inlineOrPut(
@@ -720,7 +721,6 @@ export function createServeCommitSink(
             (total, chunk) => total + chunk.bytes.byteLength,
             0,
           );
-          if (carriedBytes > MAX_BATCH_CARRIED_BYTES) return undefined;
           // the hold renews through every upload: it is quieted only for a
           // small request, just before it goes, since serve may end the lease
           if (
