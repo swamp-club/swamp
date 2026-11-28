@@ -84,7 +84,15 @@ export async function streamLines(
   const reader = stream.getReader();
   let sliceStart = performance.now();
   const decoder = new TextDecoder();
-  const lines: string[] = [];
+  // each read's lines are kept as one joined piece, so a large output's
+  // millions of line strings are let go as it streams
+  const pieces: string[] = [];
+  let lines: string[] = [];
+  const keepLines = () => {
+    if (lines.length === 0) return;
+    pieces.push(lines.join("\n"));
+    lines = [];
+  };
   // the unterminated line's pieces, joined once it ends: re-splitting a growing
   // buffer on every read is quadratic in a long line
   let open: string[] = [];
@@ -130,6 +138,7 @@ export async function streamLines(
         start = end + 1;
       }
       if (start < text.length) open.push(text.slice(start));
+      keepLines();
 
       // a full pipe's reads resolve without returning to the event loop, so
       // the line work here would starve timers and I/O, a lease's renewal among them
@@ -159,7 +168,8 @@ export async function streamLines(
     }
   }
 
-  return lines.join("\n");
+  keepLines();
+  return pieces.join("\n");
 }
 
 const PIPE_DRAIN_GRACE_MS = 5000;

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { createHash } from "node:crypto";
 import { existsSync } from "@std/fs";
 import { join, relative, resolve, SEPARATOR } from "@std/path";
 import { dirname as posixDirname } from "@std/path/posix";
@@ -4606,14 +4607,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  private async computeChecksum(content: Uint8Array): Promise<string> {
-    const buffer = new ArrayBuffer(content.length);
-    new Uint8Array(buffer).set(content);
-    const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-    const hashArray = new Uint8Array(hashBuffer);
-    return Array.from(hashArray)
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
+  // hashed in place: a copy of a large record doubles its memory
+  private computeChecksum(content: Uint8Array): Promise<string> {
+    return Promise.resolve(createHash("sha256").update(content).digest("hex"));
   }
 }
 

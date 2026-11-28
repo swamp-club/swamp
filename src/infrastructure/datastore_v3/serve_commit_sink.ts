@@ -91,6 +91,12 @@ export const MAX_RELEASE_CARRIED_BYTES = 1024 * 1024;
 export const MAX_CARRIED_CHUNKS = 1024;
 
 /**
+ * chunk bytes one commit sent alone carries in its request; the rest go
+ * ahead one at a time, so a large output is never held whole
+ */
+export const MAX_INLINE_CARRIED_BYTES = 32 * 1024 * 1024;
+
+/**
  * how many times one process uploads a commit's chunks that serve answers
  * with a failure; past it the commit fails at once and stays in the outbox
  */
@@ -270,6 +276,38 @@ export function createServeCommitSink(
     carriedFailures.set(commit.txnId, { count, error });
   };
 
+  /**
+   * each missing chunk is read once: carried in the request while it fits
+   * the byte budget, otherwise put ahead and let go
+   */
+  const inlineOrPut = async (
+    commit: Commit,
+    missing: readonly string[],
+    budgetBytes: number,
+    signal: AbortSignal,
+  ): Promise<{ inline: CommitChunk[]; bytes: number }> => {
+    const inline: CommitChunk[] = [];
+    let bytes = 0;
+    for (const sha256 of missing) {
+      const [chunk] = await chunksOf(commit, [sha256]);
+      if (
+        inline.length < MAX_CARRIED_CHUNKS &&
+        bytes + chunk.bytes.byteLength <= budgetBytes
+      ) {
+        inline.push(chunk);
+        bytes += chunk.bytes.byteLength;
+        continue;
+      }
+      await client.putChunk(
+        chunk.sha256,
+        chunk.bytes,
+        signal,
+        commit.partition,
+      );
+    }
+    return { inline, bytes };
+  };
+
   const carried = async (
     commit: Commit,
     hashes: readonly string[],
@@ -279,16 +317,12 @@ export function createServeCommitSink(
       ? new Set<string>()
       : await client.hasChunks(hashes, signal);
     const missing = hashes.filter((hash) => !held.has(hash));
-    const framed = missing.slice(0, MAX_CARRIED_CHUNKS);
-    for (const chunk of await chunksOf(commit, missing.slice(framed.length))) {
-      await client.putChunk(
-        chunk.sha256,
-        chunk.bytes,
-        signal,
-        commit.partition,
-      );
-    }
-    return await chunksOf(commit, framed);
+    return (await inlineOrPut(
+      commit,
+      missing,
+      MAX_INLINE_CARRIED_BYTES,
+      signal,
+    )).inline;
   };
 
   const leaseOf = options.leaseOf ?? (() => undefined);
@@ -575,20 +609,18 @@ export function createServeCommitSink(
       ? new Set<string>()
       : await client.hasChunks(all, signal);
     const framed: CommitChunk[][] = [];
+    // one budget for the whole batch, so it never loads more than it sends
+    let left = MAX_BATCH_CARRIED_BYTES;
     for (const [index, commit] of commits.entries()) {
       const missing = refsOf[index].filter((hash) => !held.has(hash));
-      const inFrame = missing.slice(0, MAX_CARRIED_CHUNKS);
-      for (
-        const chunk of await chunksOf(commit, missing.slice(inFrame.length))
-      ) {
-        await client.putChunk(
-          chunk.sha256,
-          chunk.bytes,
-          signal,
-          commit.partition,
-        );
-      }
-      framed.push(await chunksOf(commit, inFrame));
+      const { inline, bytes } = await inlineOrPut(
+        commit,
+        missing,
+        left,
+        signal,
+      );
+      left -= bytes;
+      framed.push(inline);
     }
     return framed;
   };

@@ -48,7 +48,9 @@ import {
   CARRIED_SEND_ATTEMPTS,
   CommitOutcomeUnknownError,
   createServeCommitSink,
+  MAX_BATCH_CARRIED_BYTES,
   MAX_CARRIED_CHUNKS,
+  MAX_INLINE_CARRIED_BYTES,
   MAY_LAND_RESENDS,
   SERVE_SEQ_GAP_ATTEMPTS,
 } from "./serve_commit_sink.ts";
@@ -1283,4 +1285,67 @@ Deno.test("createServeCommitSink: a forwarded commit that may have run is sent o
     clearServeUnreachableLatches();
     resetCommandLandedForTesting();
   }
+});
+
+const LARGE_CONTENT_BYTES = 70 * 1024 * 1024;
+
+Deno.test("createServeCommitSink: a commit sent alone carries at most its inline byte budget and puts the rest ahead (swamp-club#5180)", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, cache),
+    );
+    await uow.stageOp({
+      partition: MODEL,
+      put: {
+        intent: modelIntent({ kind: "data.save", name: "big", version: 1 }),
+        key: dataKey("big", 1),
+        content: bytesOf(LARGE_CONTENT_BYTES),
+      },
+    });
+    await uow.commit();
+
+    const [posted] = serve.posted;
+    const inlineBytes = posted.chunks.reduce(
+      (total, sha256) => total + serve.chunks.get(sha256)!.byteLength,
+      0,
+    );
+    assert(
+      inlineBytes <= MAX_INLINE_CARRIED_BYTES,
+      `carried ${inlineBytes} bytes inline`,
+    );
+    assert(serve.uploads.length > 0, "the rest went ahead");
+    const sent = posted.chunks.reduce(
+      (total, sha256) => total + serve.chunks.get(sha256)!.byteLength,
+      0,
+    ) + serve.uploads.reduce(
+      (total, upload) => total + serve.chunks.get(upload.sha256)!.byteLength,
+      0,
+    );
+    assertEquals(sent >= LARGE_CONTENT_BYTES, true);
+  });
+});
+
+Deno.test("createServeCommitSink: a batch whose new chunks pass the batch budget still goes as one batch, carrying at most the budget and putting the rest ahead (swamp-club#5180)", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    serve.takesBatches = true;
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, cache),
+    );
+    await uow.stageOp({
+      partition: MODEL,
+      put: {
+        intent: modelIntent({ kind: "data.save", name: "big", version: 1 }),
+        key: dataKey("big", 1),
+        content: bytesOf(LARGE_CONTENT_BYTES),
+      },
+    });
+    await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+    await uow.commit();
+
+    assertEquals(serve.batches.length, 1, "sent as a batch, not given up");
+    assert(serve.uploads.length > 0, "chunks past the budget went ahead");
+    assertEquals(MAX_BATCH_CARRIED_BYTES < LARGE_CONTENT_BYTES, true);
+  });
 });

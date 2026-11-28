@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -28,6 +29,9 @@ import { join } from "@std/path";
 import { createExtensionCelEnvironment } from "../../../../infrastructure/cel/cel_evaluator.ts";
 import { createDefinitionId } from "../../../definitions/definition.ts";
 import {
+  LOG_FULL_STDOUT_CHARS,
+  LOG_STDOUT_TAIL_CHARS,
+  logStdout,
   placeShellDataSplices,
   refuseShellSecretDestinations,
   SHELL_DATA_PLACEMENT_REFUSED,
@@ -2073,4 +2077,29 @@ Deno.test("shellModel: placed data reaches this host's shell as literal text and
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
   assertEquals((attrs?.stdout as string).trim(), `hello ${data}`);
+});
+
+Deno.test("logStdout: stdout up to the limit is logged whole, exactly as before (swamp-club#5180)", () => {
+  const stdout = "line\n".repeat(LOG_FULL_STDOUT_CHARS / 5);
+  assertEquals(stdout.length, LOG_FULL_STDOUT_CHARS);
+  assertEquals(logStdout(stdout, "big"), `[stdout]\n${stdout}`);
+  assertEquals(logStdout("hello", "big"), "[stdout]\nhello");
+});
+
+Deno.test("logStdout: past the limit the log keeps a marked tail from a line start, and names where the whole output is (swamp-club#5180)", () => {
+  const stdout = Array.from(
+    { length: LOG_FULL_STDOUT_CHARS / 10 + 1000 },
+    (_, i) => `l${String(i).padStart(8, "0")}`,
+  ).join("\n");
+  assert(stdout.length > LOG_FULL_STDOUT_CHARS);
+  const logged = logStdout(stdout, "big");
+  const [section, marker, ...rest] = logged.split("\n");
+  assertEquals(section, "[stdout]");
+  assertStringIncludes(marker, `stdout is ${stdout.length} characters`);
+  assertStringIncludes(marker, "swamp data get big result");
+  const tail = rest.join("\n");
+  assert(tail.length <= LOG_STDOUT_TAIL_CHARS);
+  assert(stdout.endsWith(tail), "the tail is the end of stdout");
+  assert(/^l\d{8}$/.test(rest[0]), `starts at a line: ${rest[0]}`);
+  assert(logged.length < LOG_STDOUT_TAIL_CHARS + 512);
 });
