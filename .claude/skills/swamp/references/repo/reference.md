@@ -301,6 +301,15 @@ datastore:
   snapshotInterval: 30m
 ```
 
+In team mode a follower restores before it takes over from a stopped leader, so
+the interval bounds failover time. On a small team datastore (tens of MB),
+`snapshotInterval: 10m` measured a takeover of 51-58 s, against over 100 s at
+the default `1h`. It does not help a large one: each restore also checks and
+installs the whole database (about a minute at 585 MB), and each snapshot
+uploads about half the database, 144 times a day at `10m` (about 42 GB a day at
+585 MB). Use `10m` only for a small team datastore that must fail over within a
+minute.
+
 ### Durable Writes
 
 By default a v2 data write is atomic (it survives a process crash) but is not
