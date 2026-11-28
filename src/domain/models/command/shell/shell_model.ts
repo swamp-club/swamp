@@ -382,7 +382,7 @@ async function executeCommand(
 
   const outputLogParts: string[] = [];
   if (stdout) {
-    outputLogParts.push(`[stdout]\n${stdout}`);
+    outputLogParts.push(logStdout(stdout, context.definition.name));
   }
   if (stderr) {
     outputLogParts.push(`[stderr]\n${stderr}`);
@@ -411,6 +411,30 @@ async function executeCommand(
   }
 
   return { dataHandles: [resultHandle, logHandle] };
+}
+
+/**
+ * stdout past this many characters is kept whole once, in result.stdout; the
+ * log keeps a marked tail, which is what its readers show
+ */
+export const LOG_FULL_STDOUT_CHARS = 16 * 1024 * 1024;
+
+/** characters of a large stdout's tail the log keeps */
+export const LOG_STDOUT_TAIL_CHARS = 64 * 1024;
+
+/** the log's stdout section: whole, or past the limit a marked tail */
+export function logStdout(stdout: string, behaviorName: string): string {
+  if (stdout.length <= LOG_FULL_STDOUT_CHARS) return `[stdout]\n${stdout}`;
+  let tail = stdout.slice(-LOG_STDOUT_TAIL_CHARS);
+  const lineStart = tail.indexOf("\n");
+  if (lineStart !== -1 && lineStart < tail.length - 1) {
+    tail = tail.slice(lineStart + 1);
+  } else if (/^[\udc00-\udfff]/.test(tail)) {
+    tail = tail.slice(1);
+  }
+  return `[stdout]\n[swamp: stdout is ${stdout.length} characters; this log ` +
+    `keeps its last ${tail.length}. The full output is the stdout attribute ` +
+    `of the result resource: swamp data get ${behaviorName} result]\n${tail}`;
 }
 
 export const shellModel: ModelDefinition = defineModel({
