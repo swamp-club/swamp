@@ -2077,7 +2077,7 @@ Deno.test("shellModel: placed data reaches this host's shell as literal text and
   assertEquals((attrs?.stdout as string).trim(), `hello ${data}`);
 });
 
-/** the log as writeText stored it before the log was streamed */
+/** the log as one joined string, the shape the streamed log must match byte for byte */
 function joinedOutputLog(stdout: string, stderr: string): Uint8Array {
   const parts: string[] = [];
   if (stdout) parts.push(`[stdout]\n${stdout}`);
