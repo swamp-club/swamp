@@ -2764,13 +2764,9 @@ export function createFileWriterFactory(
     writers.push(writer);
 
     const originalWriteAll = writer.writeAll.bind(writer);
+    const originalWriteStream = writer.writeStream.bind(writer);
     const originalFinalize = writer.finalize.bind(writer);
-
-    // Only wrap the terminal methods (writeAll, finalize) — writeText delegates
-    // to writeAll and writeStream delegates to finalize, so wrapping those too
-    // would record each handle twice.
-    writer.writeAll = async (content: Uint8Array) => {
-      const handle = await originalWriteAll(content);
+    const recorded = (handle: DataHandle): DataHandle => {
       handles.push(handle);
       const receipt = writer.getDeferredReceipt();
       if (receipt) {
@@ -2779,15 +2775,13 @@ export function createFileWriterFactory(
       return handle;
     };
 
-    writer.finalize = async () => {
-      const handle = await originalFinalize();
-      handles.push(handle);
-      const receipt = writer.getDeferredReceipt();
-      if (receipt) {
-        deferredReceipts.push(receipt);
-      }
-      return handle;
-    };
+    // Only the terminal methods are wrapped: writeText delegates to writeAll,
+    // so wrapping it too would record its handle twice.
+    writer.writeAll = async (content: Uint8Array) =>
+      recorded(await originalWriteAll(content));
+    writer.writeStream = async (stream, options) =>
+      recorded(await originalWriteStream(stream, options));
+    writer.finalize = async () => recorded(await originalFinalize());
 
     return writer;
   };

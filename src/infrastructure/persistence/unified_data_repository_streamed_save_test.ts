@@ -37,7 +37,7 @@ import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
 import { runInUnitOfWork } from "./unit_of_work_scope.ts";
 
 const TYPE = ModelType.create("test/streamed");
-const MODEL_ID = "streamed-model";
+const MODEL_ID = crypto.randomUUID();
 const MODEL_NAME = "streamed";
 const FILES = {
   log: {
