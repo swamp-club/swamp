@@ -263,17 +263,11 @@ export function createServeCommitSink(
       ? { error: failures.error }
       : undefined;
   };
-  // a put's failure reaches the caller's count too: each failure counts once
-  const countedFailures = new WeakSet<object>();
   const noteCarriedFailure = (
     commit: Commit,
     chunks: readonly CommitChunk[],
     error: unknown,
   ): void => {
-    if (typeof error === "object" && error !== null) {
-      if (countedFailures.has(error)) return;
-      countedFailures.add(error);
-    }
     // only serve failing to store, never a refusal or one that clears on its own
     if (
       chunks.length === 0 || !(error instanceof ServeUpstreamError) ||
@@ -567,6 +561,8 @@ export function createServeCommitSink(
         // send the named ones once more.
         if (!(error instanceof ServeChunksMissingError)) throw error;
         const named = new Set(error.missing);
+        // inlineOrPut counts a failed upload itself; the caller's count must not see the first send's chunks
+        chunks = [];
         chunks = (await inlineOrPut(
           commit,
           refs.filter((hash) => named.has(hash)),
