@@ -226,13 +226,13 @@ function createMockWriters(): {
       writeLine(_line: string): Promise<void> {
         return Promise.resolve();
       },
-      writeStream(
-        _stream: ReadableStream<Uint8Array>,
+      async writeStream(
+        stream: ReadableStream<Uint8Array>,
       ): Promise<DataHandle> {
-        const content = new Uint8Array();
+        const content = await new Response(stream).bytes();
         const handle = buildHandle(content);
         results.push({ handle, content });
-        return Promise.resolve(handle);
+        return handle;
       },
       getFilePath(): Promise<string> {
         return Promise.resolve("/tmp/mock");
