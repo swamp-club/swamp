@@ -20,6 +20,11 @@
 import type { Logger } from "@logtape/logtape";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { escapeLogTemplate } from "../logging/logger.ts";
+import {
+  ASYNC_QUEUE_SLICE_MS,
+  yieldToEventLoop,
+} from "../stream/async_queue.ts";
+import { pendingOutputBackpressure } from "../../domain/models/method_events.ts";
 import { shouldIsolateProcessGroup } from "./process_group_policy.ts";
 import { isProcessAlive } from "./process_kill.ts";
 import { attachProcessJob, type ProcessJob } from "./windows_job.ts";
@@ -70,9 +75,14 @@ export async function streamLines(
   stream: ReadableStream<Uint8Array>,
   onLine?: (line: string) => void,
   signal?: AbortSignal,
-  options: { normalizeCrlf?: boolean } = {},
+  options: {
+    normalizeCrlf?: boolean;
+    /** a consumer far behind on this output: the next chunk waits for it */
+    backpressure?: () => Promise<void> | undefined;
+  } = {},
 ): Promise<string> {
   const reader = stream.getReader();
+  let sliceStart = performance.now();
   const decoder = new TextDecoder();
   const lines: string[] = [];
   // the unterminated line's pieces, joined once it ends: re-splitting a growing
@@ -120,6 +130,15 @@ export async function streamLines(
         start = end + 1;
       }
       if (start < text.length) open.push(text.slice(start));
+
+      // a full pipe's reads resolve without returning to the event loop, so
+      // the line work here would starve timers and I/O, a lease's renewal among them
+      const behind = options.backpressure?.();
+      if (behind !== undefined) await behind;
+      if (performance.now() - sliceStart >= ASYNC_QUEUE_SLICE_MS) {
+        await yieldToEventLoop();
+        sliceStart = performance.now();
+      }
     }
 
     const rest = open.join("");
@@ -379,7 +398,10 @@ export async function executeProcess(
     ? "tree"
     : "child";
   const graceMs = options.killGraceMs ?? KILL_GRACE_MS;
-  const lineOptions = { normalizeCrlf: options.normalizeCrlf === true };
+  const lineOptions = {
+    normalizeCrlf: options.normalizeCrlf === true,
+    backpressure: () => pendingOutputBackpressure(options.logger),
+  };
 
   const command = new Deno.Command(options.command, commandOptions);
   const attachJob = options.attachJob ?? attachProcessJob;

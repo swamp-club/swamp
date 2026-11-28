@@ -84,3 +84,38 @@ export type MethodExecutionEvent =
     callerModelType: string;
     callerMethod: string;
   };
+
+const BACKPRESSURE = Symbol.for("swamp.outputBackpressure");
+const PENDING_BACKPRESSURE = Symbol.for("swamp.pendingOutputBackpressure");
+
+/**
+ * marks a promise an output event's delivery returned as backpressure, the
+ * only kind a producer of output waits on; it never rejects
+ */
+export function asOutputBackpressure(
+  promise: Promise<void> | undefined,
+): Promise<void> | undefined {
+  if (promise === undefined) return undefined;
+  return Object.assign(promise, { [BACKPRESSURE]: true });
+}
+
+export function isOutputBackpressure(
+  value: unknown,
+): value is Promise<void> {
+  return value instanceof Promise &&
+    (value as unknown as Record<symbol, unknown>)[BACKPRESSURE] === true;
+}
+
+/** the backpressure a logger wrapped for output has pending, if any */
+export function pendingOutputBackpressure(
+  logger: unknown,
+): Promise<void> | undefined {
+  if (logger === null || typeof logger !== "object") return undefined;
+  const pending = (logger as Record<symbol, unknown>)[PENDING_BACKPRESSURE];
+  return typeof pending === "function"
+    ? (pending as () => Promise<void> | undefined)()
+    : undefined;
+}
+
+export const PENDING_OUTPUT_BACKPRESSURE: typeof PENDING_BACKPRESSURE =
+  PENDING_BACKPRESSURE;

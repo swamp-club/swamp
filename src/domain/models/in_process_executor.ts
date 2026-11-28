@@ -25,7 +25,11 @@ import type {
   ExecutionResult,
 } from "./execution_envelope.ts";
 import type { Definition } from "../definitions/definition.ts";
-import type { MethodExecutionEvent } from "./method_events.ts";
+import {
+  isOutputBackpressure,
+  type MethodExecutionEvent,
+  PENDING_OUTPUT_BACKPRESSURE,
+} from "./method_events.ts";
 import type {
   DataWriter,
   MethodContext,
@@ -85,8 +89,10 @@ export function wrapLoggerWithOutput(
   redactor?: SecretRedactor,
 ): Logger {
   if (!onEvent) return logger;
+  let pending: Promise<void> | undefined;
   return new Proxy(logger, {
     get(target, prop, receiver) {
+      if (prop === PENDING_OUTPUT_BACKPRESSURE) return () => pending;
       if (
         prop === "info" || prop === "warn" || prop === "warning" ||
         prop === "error"
@@ -113,7 +119,7 @@ export function wrapLoggerWithOutput(
           } else {
             line = String(tpl);
           }
-          onEvent({
+          const delivered: unknown = onEvent({
             type: "output",
             line: redactor?.hasSecrets ? redactor.redact(line) : line,
             stream: prop === "warn" || prop === "warning" || prop === "error"
@@ -125,6 +131,8 @@ export function wrapLoggerWithOutput(
               ? "error"
               : "warning",
           });
+          // a settled one costs a producer only a microtask, so it is never cleared
+          if (isOutputBackpressure(delivered)) pending = delivered;
         };
       }
       return Reflect.get(target, prop, receiver);

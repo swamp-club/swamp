@@ -1540,7 +1540,7 @@ export async function* modelMethodRun(
                             extensionFilesRoot: modelDef.extensionFilesRoot,
                             onEvent: (event: MethodExecutionEvent) => {
                               if (event.type === "output") {
-                                push({
+                                return push({
                                   kind: "method_output",
                                   modelName: definition.name,
                                   methodName: input.methodName,

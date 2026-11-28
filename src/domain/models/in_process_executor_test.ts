@@ -26,7 +26,11 @@ import {
   ResourceSizePolicy,
   ResourceTooLargeError,
 } from "../data/resource_size_policy.ts";
-import type { MethodExecutionEvent } from "./method_events.ts";
+import {
+  asOutputBackpressure,
+  type MethodExecutionEvent,
+  pendingOutputBackpressure,
+} from "./method_events.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 import {
@@ -1367,4 +1371,21 @@ Deno.test("InProcessExecutor: a resource or file write counts as started on the 
   assertEquals(result.status, "success", result.error);
   assertEquals(sizes[0], 2);
   assertEquals(await dataWrites.settle(1_000), 0);
+});
+
+Deno.test("wrapLoggerWithOutput: holds the backpressure an output event's delivery returns, and nothing else (swamp-club#5158)", () => {
+  const logger = getLogger(["test", "wrap-backpressure"]);
+  assertEquals(pendingOutputBackpressure(logger), undefined);
+  const tagged = asOutputBackpressure(Promise.resolve())!;
+  const deliveries: unknown[] = [undefined, tagged, Promise.resolve()];
+  const wrapped = wrapLoggerWithOutput(
+    logger,
+    (() => deliveries.shift()) as (event: MethodExecutionEvent) => void,
+  );
+  wrapped.info("first");
+  assertEquals(pendingOutputBackpressure(wrapped), undefined);
+  wrapped.info("second");
+  assertEquals(pendingOutputBackpressure(wrapped), tagged);
+  wrapped.info("third, an untagged promise");
+  assertEquals(pendingOutputBackpressure(wrapped), tagged);
 });
