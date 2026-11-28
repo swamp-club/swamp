@@ -22,7 +22,7 @@ import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import { join } from "@std/path";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
-import type { Commit } from "../../domain/datastore_v3/commit.ts";
+import { Commit } from "../../domain/datastore_v3/commit.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import {
   blobPut,
@@ -48,7 +48,6 @@ import {
   CARRIED_SEND_ATTEMPTS,
   CommitOutcomeUnknownError,
   createServeCommitSink,
-  MAX_BATCH_CARRIED_BYTES,
   MAX_CARRIED_CHUNKS,
   MAX_INLINE_CARRIED_BYTES,
   MAY_LAND_RESENDS,
@@ -1315,14 +1314,10 @@ Deno.test("createServeCommitSink: a commit sent alone carries at most its inline
       `carried ${inlineBytes} bytes inline`,
     );
     assert(serve.uploads.length > 0, "the rest went ahead");
-    const sent = posted.chunks.reduce(
-      (total, sha256) => total + serve.chunks.get(sha256)!.byteLength,
-      0,
-    ) + serve.uploads.reduce(
-      (total, upload) => total + serve.chunks.get(upload.sha256)!.byteLength,
-      0,
-    );
-    assertEquals(sent >= LARGE_CONTENT_BYTES, true);
+    const refs = (await Commit.fromJSON(serve.commitAt(MODEL, 1)!)).chunkRefs();
+    const sent = [...posted.chunks, ...serve.uploads.map((u) => u.sha256)];
+    assertEquals(new Set(sent), new Set(refs), "every chunk reached serve");
+    assertEquals(sent.length, new Set(refs).size, "each chunk sent once");
   });
 });
 
@@ -1346,7 +1341,14 @@ Deno.test("createServeCommitSink: a batch whose new chunks pass the batch budget
 
     assertEquals(serve.batches.length, 1, "sent as a batch, not given up");
     assert(serve.uploads.length > 0, "chunks past the budget went ahead");
-    assertEquals(MAX_BATCH_CARRIED_BYTES < LARGE_CONTENT_BYTES, true);
+    const inlineBytes = serve.posted.flatMap((posted) => posted.chunks).reduce(
+      (total, sha256) => total + serve.chunks.get(sha256)!.byteLength,
+      0,
+    );
+    assert(
+      inlineBytes <= MAX_INLINE_CARRIED_BYTES,
+      `the batch carried ${inlineBytes} bytes inline`,
+    );
   });
 });
 
@@ -1433,13 +1435,41 @@ Deno.test("createServeCommitSink: a failed upload on the resend of lost chunks c
     );
     // the first send's seven uploads land; every one after fails
     serve.failsPutsAfter = 7;
-    for (let attempt = 1; attempt <= CARRIED_SEND_ATTEMPTS + 2; attempt++) {
+    for (let attempt = 1; attempt <= CARRIED_SEND_ATTEMPTS; attempt++) {
+      const uploads = serve.requests.putChunk;
       await assertRejects(() => sink.append(commit));
+      assert(serve.requests.putChunk > uploads, `attempt ${attempt} uploads`);
     }
-    assertEquals(
-      serve.requests.putChunk - 7,
-      CARRIED_SEND_ATTEMPTS,
-      "one failed upload per attempt until they are spent",
-    );
+    const uploadsWhenSpent = serve.requests.putChunk;
+    const postsWhenSpent = serve.requests.postCommit;
+    await assertRejects(() => sink.append(commit), ServeUpstreamError);
+    assertEquals(serve.requests.putChunk, uploadsWhenSpent, "no upload after");
+    assertEquals(serve.requests.postCommit, postsWhenSpent, "no post after");
+  });
+});
+
+Deno.test("createServeCommitSink: a cache read that fails while chunks are put ahead returns only once those uploads have settled (swamp-club#5180)", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    // six ride inline, four go ahead, and the eleventh cannot be read
+    const { commit, hashes } = await bigChunkedCommit(cache, 13);
+    const put = serve.putChunk.bind(serve);
+    let started = 0;
+    let settled = 0;
+    serve.putChunk = async (sha256, bytes, signal, partition) => {
+      started++;
+      // a macrotask later, so a caller that stops waiting returns first
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      settled++;
+      return await put(sha256, bytes, signal, partition);
+    };
+    const get = cache.get.bind(cache);
+    cache.get = (namespace, sha256, signal) =>
+      sha256 === hashes[10]
+        ? Promise.reject(new Error("cache read failed"))
+        : get(namespace, sha256, signal);
+
+    await assertRejects(() => sink.append(commit), Error, "cache read failed");
+    assertEquals(started, 4, "four uploads were in flight");
+    assertEquals(settled, started, "no upload outlived the send");
   });
 });
