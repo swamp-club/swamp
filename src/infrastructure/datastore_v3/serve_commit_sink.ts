@@ -298,12 +298,17 @@ export function createServeCommitSink(
         bytes += chunk.bytes.byteLength;
         continue;
       }
-      await client.putChunk(
-        chunk.sha256,
-        chunk.bytes,
-        signal,
-        commit.partition,
-      );
+      try {
+        await client.putChunk(
+          chunk.sha256,
+          chunk.bytes,
+          signal,
+          commit.partition,
+        );
+      } catch (error) {
+        noteCarriedFailure(commit, [chunk], error);
+        throw error;
+      }
     }
     return { inline, bytes };
   };
@@ -539,7 +544,12 @@ export function createServeCommitSink(
         // send the named ones once more.
         if (!(error instanceof ServeChunksMissingError)) throw error;
         const named = new Set(error.missing);
-        chunks = await chunksOf(commit, refs.filter((hash) => named.has(hash)));
+        chunks = (await inlineOrPut(
+          commit,
+          refs.filter((hash) => named.has(hash)),
+          MAX_INLINE_CARRIED_BYTES,
+          signal,
+        )).inline;
         return await client.postCommit(
           commit.partition,
           envelope,

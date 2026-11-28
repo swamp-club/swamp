@@ -30,6 +30,7 @@ import { hostname } from "node:os";
 import { processHostIdentity } from "../runtime/process.ts";
 import {
   ACCEPTED_SHORT_CONTENT_TTL_MS,
+  checksumOf,
   FileSystemUnifiedDataRepository,
   sortedSubdirectoryNames,
   VERSION_FLOOR_SUFFIX,
@@ -5284,4 +5285,17 @@ Deno.test("ensureContentLocal and isContentAcceptedSync: an owed-only hook never
     assertEquals(lazy.calls.paths, []);
     assertEquals(repo.contentMayBeOwed(), true);
   });
+});
+
+Deno.test("checksumOf: hashes a view at an offset and a multi-slice buffer as their bytes (swamp-club#5180)", async () => {
+  const hex = async (bytes: Uint8Array) =>
+    Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice())),
+      (b) => b.toString(16).padStart(2, "0"),
+    ).join("");
+  const whole = new Uint8Array(40 * 1024 * 1024);
+  for (let i = 0; i < whole.length; i += 4096) whole[i] = (i / 4096) % 251;
+  const view = whole.subarray(7, 7 + 33 * 1024 * 1024);
+  assertEquals(await checksumOf(view), await hex(view));
+  assertEquals(await checksumOf(new Uint8Array()), await hex(new Uint8Array()));
 });

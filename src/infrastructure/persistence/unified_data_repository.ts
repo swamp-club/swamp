@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { createHash } from "node:crypto";
+import { yieldToEventLoop } from "../stream/async_queue.ts";
 import { existsSync } from "@std/fs";
 import { join, relative, resolve, SEPARATOR } from "@std/path";
 import { dirname as posixDirname } from "@std/path/posix";
@@ -254,6 +255,21 @@ function hasVersionMetadataSync(versionDir: string): boolean {
  * data name, so it cannot collide
  */
 export const VERSION_FLOOR_SUFFIX = "..version-floor";
+
+const CHECKSUM_SLICE_BYTES = 16 * 1024 * 1024;
+
+/**
+ * hashed in place, a slice at a time with an event-loop turn between: a copy
+ * of a large record doubles its memory, and one long hash starves a lease's renewal
+ */
+export async function checksumOf(content: Uint8Array): Promise<string> {
+  const hash = createHash("sha256");
+  for (let at = 0; at < content.byteLength; at += CHECKSUM_SLICE_BYTES) {
+    if (at > 0) await yieldToEventLoop();
+    hash.update(content.subarray(at, at + CHECKSUM_SLICE_BYTES));
+  }
+  return hash.digest("hex");
+}
 
 export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   private readonly baseDir: string;
@@ -4607,9 +4623,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  // hashed in place: a copy of a large record doubles its memory
   private computeChecksum(content: Uint8Array): Promise<string> {
-    return Promise.resolve(createHash("sha256").update(content).digest("hex"));
+    return checksumOf(content);
   }
 }
 
